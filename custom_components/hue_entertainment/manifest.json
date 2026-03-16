@@ -1,11 +1,12 @@
 {
   "domain": "hue_entertainment",
   "name": "Hue Entertainment Bridge",
-  "codeowners": [],
+  "codeowners": ["@83noit"],
   "config_flow": true,
   "dependencies": ["network", "zeroconf"],
-  "documentation": "https://github.com/benb/hass-hue-entertainment",
+  "documentation": "https://github.com/83noit/ha-hue-entertainment",
   "iot_class": "local_push",
+  "issue_tracker": "https://github.com/83noit/ha-hue-entertainment/issues",
   "requirements": [],
-  "version": "0.1.0"
+  "version": "0.1.1"
 }
