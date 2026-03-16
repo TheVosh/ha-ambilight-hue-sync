@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+*.pyo
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+
+# Local-only directories (not published)
+lib/
+examples/
+notes/

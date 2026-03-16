@@ -7,7 +7,7 @@ import subprocess
 import time
 
 import pytest
-from dtls_psk import DTLSPSKServer
+from hue_entertainment.dtls_psk import DTLSPSKServer
 
 TEST_PSK_IDENTITY = "test-user-abc123"
 TEST_PSK_KEY = bytes.fromhex("deadbeefcafebabe1234567890abcdef")

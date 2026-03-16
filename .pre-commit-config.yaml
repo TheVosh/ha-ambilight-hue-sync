@@ -1,0 +1,29 @@
+repos:
+# All hooks use language: system — tools come from the nix develop PATH.
+# Always commit from inside `nix develop` (or `direnv allow`).
+-   repo: local
+    hooks:
+    -   id: ruff
+        name: ruff
+        entry: ruff check --fix
+        language: system
+        types_or: [python, pyi]
+        pass_filenames: false
+    -   id: ruff-format
+        name: ruff-format
+        entry: ruff format
+        language: system
+        types_or: [python, pyi]
+        pass_filenames: false
+    -   id: mypy
+        name: mypy
+        entry: mypy custom_components/ --ignore-missing-imports
+        language: system
+        pass_filenames: false
+        types: [python]
+    -   id: pytest
+        name: pytest (unit tests only; run test_dtls_server manually)
+        entry: python3 -m pytest tests/test_certificate.py tests/test_entertainment.py tests/test_hue_api.py tests/test_discovery.py tests/test_user_store.py
+        language: system
+        pass_filenames: false
+        types_or: [python, toml]

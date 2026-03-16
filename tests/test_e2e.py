@@ -22,7 +22,7 @@ import pytest
 import pytest_asyncio
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
-from dtls_psk import DTLSPSKServer
+from hue_entertainment.dtls_psk import DTLSPSKServer
 
 # ---------------------------------------------------------------------------
 # Bootstrap: load hue_entertainment modules without a real HA install
