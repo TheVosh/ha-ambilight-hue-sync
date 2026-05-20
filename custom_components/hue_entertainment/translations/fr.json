@@ -1,0 +1,66 @@
+{
+  "entity": {
+    "binary_sensor": {
+      "entertainment_active": {
+        "name": "Ambilight actif"
+      }
+    }
+  },
+  "config": {
+    "step": {
+      "user": {
+        "title": "Sélectionner les lumières",
+        "description": "Choisissez les lumières à inclure dans l'espace de divertissement.",
+        "data": {
+          "lights": "Lumières"
+        }
+      },
+      "pre_pairing": {
+        "title": "Prêt pour l'association",
+        "description": "L'étape suivante lancera un compte à rebours d'association de 60 secondes.\n\nAvant d'appuyer sur **Suivant**, ouvrez les paramètres de votre téléviseur et accédez à **Ambilight > Ambilight+hue** afin qu'il soit prêt à rechercher le pont."
+      },
+      "pairing": {
+        "title": "Association en cours",
+        "description": "Recherche de votre téléviseur. La fenêtre d'association reste ouverte pendant 60 secondes."
+      },
+      "not_paired": {
+        "title": "Délai d'association dépassé",
+        "description": "Votre téléviseur ne s'est pas associé dans le temps imparti. Le pont va démarrer sans téléviseur associé — vous pourrez relancer l'association plus tard depuis le menu de configuration de l'intégration."
+      }
+    },
+    "progress": {
+      "waiting_for_tv": "En attente de l'association de votre téléviseur…"
+    },
+    "abort": {
+      "already_configured": "Le pont de divertissement Hue (Hue Entertainment Bridge) est déjà configuré."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Pont de divertissement Hue",
+        "description": "Modifiez les lumières de l'espace de divertissement ou associez votre téléviseur.",
+        "data": {
+          "lights": "Lumières",
+          "pair_now": "Associer le téléviseur maintenant",
+          "bind_ip": "Lier à l'adresse IP"
+        },
+        "data_description": {
+          "pair_now": "Ouvre une fenêtre d'association de 60 secondes après l'enregistrement.",
+          "bind_ip": "Laissez vide pour utiliser l'adresse IP de l'hôte HA détectée automatiquement. Renseignez une adresse IP secondaire (ex. une interface macvlan) pour que les serveurs HTTP et DTLS du pont écoutent uniquement sur cette adresse, libérant ainsi le port 80 sur l'IP principale pour Traefik ou Nginx."
+        }
+      },
+      "pairing": {
+        "title": "Associer votre téléviseur",
+        "description": "Ouvrez les paramètres Ambilight Sync de votre téléviseur maintenant. La fenêtre d'association reste ouverte pendant 60 secondes."
+      },
+      "not_paired": {
+        "title": "Délai d'association dépassé",
+        "description": "Votre téléviseur ne s'est pas associé dans le temps imparti. Vous pouvez réessayer depuis le menu de configuration."
+      }
+    },
+    "progress": {
+      "waiting_for_tv": "En attente de l'association de votre téléviseur…"
+    }
+  }
+}
