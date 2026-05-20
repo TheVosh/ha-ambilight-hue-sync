@@ -1,19 +1,31 @@
 # Hue Entertainment Bridge
 
-A Home Assistant integration that emulates a Philips Hue Bridge's **entertainment mode**, allowing a Hue-compatible TV (Ambilight) to control Zigbee lights managed by ZHA.
+A Home Assistant integration that emulates a Philips Hue Bridge's **entertainment mode**, allowing a Hue-compatible TV (Ambilight) to control Zigbee lights managed by [ZHA](https://www.home-assistant.io/integrations/zha/).
 
 Your TV thinks it's talking to a real Hue Bridge. Your Zigbee bulbs change colour in sync with what's on screen.
 
 ## How it works
 
-```
-TV (Ambilight) ──mDNS──> discovers bridge
-              ──HTTP───> pairs via Hue API
-              ──DTLS───> streams colour frames at 25fps
-                              │
-                    Hue Entertainment Bridge
-                              │
-              ──ZHA────> updates Zigbee lights (adaptive rate)
+```mermaid
+flowchart TD
+    TV["📺 Ambilight TV"]
+
+    subgraph HA["Home Assistant"]
+        subgraph Integration["Hue Entertainment Bridge"]
+            API["Hue API\n:80 HTTP"]
+            DTLS["DTLS Server\n:2100 UDP"]
+            Engine["Entertainment Engine\nframe parser · throttle · coalesce"]
+        end
+        ZHA["ZHA"]
+    end
+
+    Lights["💡 Zigbee lights"]
+
+    TV -->|"mDNS discovery + pairing"| API
+    TV -->|"HueStream frames @ 25 fps"| DTLS
+    DTLS --> Engine
+    Engine -->|"light.turn_on · adaptive rate"| ZHA
+    ZHA -->|Zigbee| Lights
 ```
 
 The integration:
