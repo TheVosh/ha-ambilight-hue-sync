@@ -55,7 +55,7 @@ The integration:
 
 ### HACS (recommended)
 
-1. Add this repository as a custom repository in HACS
+1. Open HACS and go to **Integrations**
 2. Search for "Hue Entertainment Bridge" and install
 3. Restart Home Assistant
 
