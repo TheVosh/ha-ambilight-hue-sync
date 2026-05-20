@@ -7,6 +7,7 @@ CONF_ENTERTAINMENT_PORT = "entertainment_port"
 CONF_API_PORT = "api_port"
 CONF_BRIDGE_ID = "bridge_id"
 CONF_PAIR_NOW = "pair_now"
+CONF_BIND_IP = "bind_ip"
 
 DEFAULT_ENTERTAINMENT_PORT = 2100
 DEFAULT_API_PORT = 80

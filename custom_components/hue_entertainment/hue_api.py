@@ -46,6 +46,7 @@ class HueAPIServer:
         channel_count: int,
         light_entities: list[str],
         user_store: UserStore | None = None,
+        bind_ip: str | None = None,
     ) -> None:
         self._bridge_id = bridge_id
         self._mac = mac
@@ -53,6 +54,7 @@ class HueAPIServer:
         self._http_port = http_port
         self._channel_count = channel_count
         self._light_entities = light_entities
+        self._bind_ip = bind_ip
 
         self._user_store = user_store if user_store is not None else UserStore()
 
@@ -115,9 +117,10 @@ class HueAPIServer:
 
         self._http_runner = web.AppRunner(app)
         await self._http_runner.setup()
-        http_site = web.TCPSite(self._http_runner, "0.0.0.0", self._http_port)
+        bind_addr = self._bind_ip or "0.0.0.0"
+        http_site = web.TCPSite(self._http_runner, bind_addr, self._http_port)
         await http_site.start()
-        _LOGGER.info("Hue API HTTP server on port %d", self._http_port)
+        _LOGGER.info("Hue API HTTP server on %s:%d", bind_addr, self._http_port)
 
     async def async_stop(self) -> None:
         """Stop the HTTP server."""

@@ -42,10 +42,12 @@
         "description": "Update the entertainment area lights or pair your TV.",
         "data": {
           "lights": "Lights",
-          "pair_now": "Pair TV now"
+          "pair_now": "Pair TV now",
+          "bind_ip": "Bind IP address"
         },
         "data_description": {
-          "pair_now": "Opens a 60-second pairing window after saving."
+          "pair_now": "Opens a 60-second pairing window after saving.",
+          "bind_ip": "Leave blank to use the auto-detected HA host IP. Set to a secondary IP address (e.g. a macvlan interface) to bind the bridge's HTTP and DTLS servers to that address only, freeing port 80 on the primary IP for Traefik or Nginx."
         }
       },
       "pairing": {

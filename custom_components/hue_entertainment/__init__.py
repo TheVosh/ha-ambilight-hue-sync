@@ -20,6 +20,7 @@ from homeassistant.util.network import is_loopback
 from .config_flow import mac_from_bridge_id
 from .const import (
     CONF_API_PORT,
+    CONF_BIND_IP,
     CONF_BRIDGE_ID,
     CONF_ENTERTAINMENT_PORT,
     CONF_LIGHTS,
@@ -48,7 +49,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     bridge_id: str = entry.data[CONF_BRIDGE_ID]
     mac = mac_from_bridge_id(bridge_id)
 
-    host_ip = await hass.async_add_executor_job(_get_host_ip, hass)
+    # If a bind IP is explicitly configured, use it directly — no need to probe.
+    bind_ip: str | None = entry.options.get(CONF_BIND_IP) or entry.data.get(CONF_BIND_IP)
+    if bind_ip:
+        host_ip = bind_ip
+    else:
+        host_ip = await hass.async_add_executor_job(_get_host_ip, hass)
 
     # Resolve port config (options take precedence over data, data over defaults)
     ent_port = entry.options.get(
@@ -91,6 +97,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         channel_count=len(light_entities),
         light_entities=light_entities,
         user_store=user_store,
+        bind_ip=bind_ip,
     )
 
     # DTLS server — always listening; TV may probe before the REST "start" action
@@ -103,7 +110,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # DTLS library logs under "dtls_psk.server" (separate from this integration).
     # Enable with: logger: logs: dtls_psk.server: debug
     dtls_server = DTLSPSKServer(
-        host="0.0.0.0",
+        host=bind_ip or "0.0.0.0",
         port=ent_port,
         psk_callback=psk_lookup,
         frame_callback=engine.handle_frame,

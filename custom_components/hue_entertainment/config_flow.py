@@ -13,14 +13,34 @@ from homeassistant.helpers.selector import (
     BooleanSelector,
     EntitySelector,
     EntitySelectorConfig,
+    TextSelector,
 )
 
-from .const import CONF_BRIDGE_ID, CONF_LIGHTS, CONF_PAIR_NOW, DEFAULT_API_PORT, DOMAIN
+from .const import (
+    CONF_BIND_IP,
+    CONF_BRIDGE_ID,
+    CONF_LIGHTS,
+    CONF_PAIR_NOW,
+    DEFAULT_API_PORT,
+    DOMAIN,
+)
 from .discovery import HueBridgeDiscovery
 from .hue_api import HueAPIServer
 from .user_store import UserStore
 
 PAIRING_TIMEOUT = 60  # seconds
+
+
+def _validate_ipv4(value: str) -> str:
+    """Voluptuous validator: accept empty string or a valid IPv4 address."""
+    value = value.strip()
+    if not value:
+        return value
+    try:
+        socket.inet_aton(value)
+    except OSError as err:
+        raise vol.Invalid(f"Invalid IPv4 address: {value}") from err
+    return value
 
 
 async def _wait_for_new_user(
@@ -191,6 +211,7 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
     def __init__(self) -> None:
         super().__init__()
         self._lights: list[str] = []
+        self._bind_ip: str | None = None
         self._paired = False
         self._pairing_task: asyncio.Task | None = None
 
@@ -198,12 +219,22 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
         """Show lights selection and optional re-pair toggle."""
         if user_input is not None:
             self._lights = user_input[CONF_LIGHTS]
+            raw_ip = (user_input.get(CONF_BIND_IP) or "").strip()
+            self._bind_ip = raw_ip or None
             if user_input.get(CONF_PAIR_NOW, False):
                 return await self.async_step_pairing()
-            return self.async_create_entry(title="", data={CONF_LIGHTS: self._lights})
+            return self.async_create_entry(
+                title="", data={CONF_LIGHTS: self._lights, CONF_BIND_IP: self._bind_ip}
+            )
 
         current_lights = self.config_entry.options.get(
             CONF_LIGHTS, self.config_entry.data.get(CONF_LIGHTS, [])
+        )
+        current_bind_ip = (
+            self.config_entry.options.get(
+                CONF_BIND_IP, self.config_entry.data.get(CONF_BIND_IP, "")
+            )
+            or ""
         )
         return self.async_show_form(
             step_id="init",
@@ -213,6 +244,9 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                         EntitySelectorConfig(domain="light", multiple=True)
                     ),
                     vol.Optional(CONF_PAIR_NOW, default=False): BooleanSelector(),
+                    vol.Optional(CONF_BIND_IP, default=current_bind_ip): vol.All(
+                        TextSelector(), _validate_ipv4
+                    ),
                 }
             ),
         )
@@ -247,10 +281,14 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
 
     async def async_step_paired(self, user_input=None):
         """TV paired — save options immediately."""
-        return self.async_create_entry(title="", data={CONF_LIGHTS: self._lights})
+        return self.async_create_entry(
+            title="", data={CONF_LIGHTS: self._lights, CONF_BIND_IP: self._bind_ip}
+        )
 
     async def async_step_not_paired(self, user_input=None):
         """Pairing timed out — acknowledge then save options."""
         if user_input is not None:
-            return self.async_create_entry(title="", data={CONF_LIGHTS: self._lights})
+            return self.async_create_entry(
+                title="", data={CONF_LIGHTS: self._lights, CONF_BIND_IP: self._bind_ip}
+            )
         return self.async_show_form(step_id="not_paired", data_schema=vol.Schema({}))

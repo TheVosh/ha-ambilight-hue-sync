@@ -6,7 +6,7 @@ import importlib.util
 import sys
 import types
 from pathlib import Path
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 import pytest_asyncio
@@ -694,3 +694,68 @@ class TestPublicProperties:
         server.clear_entertainment()
         assert server.entertainment_active is False
         assert server.entertainment_owner is None
+
+
+# ---------------------------------------------------------------------------
+# 15. Bind IP
+# ---------------------------------------------------------------------------
+
+
+class TestBindIP:
+    @pytest.mark.asyncio
+    async def test_default_binds_to_wildcard(self):
+        server = _make_server()
+        mock_runner = MagicMock()
+        mock_runner.setup = AsyncMock()
+        mock_site_instance = MagicMock()
+        mock_site_instance.start = AsyncMock()
+        with (
+            patch(
+                "hue_entertainment.hue_api.web.AppRunner",
+                return_value=mock_runner,
+            ),
+            patch(
+                "hue_entertainment.hue_api.web.TCPSite",
+                return_value=mock_site_instance,
+            ) as mock_site_cls,
+        ):
+            await server.async_start()
+            addr = mock_site_cls.call_args[0][1]
+            assert addr == "0.0.0.0"
+
+    @pytest.mark.asyncio
+    async def test_custom_bind_ip_used(self):
+        server = HueAPIServer(
+            bridge_id=_BRIDGE_ID,
+            mac=_MAC,
+            host_ip="192.168.10.5",
+            http_port=8080,
+            channel_count=3,
+            light_entities=_LIGHTS,
+            bind_ip="192.168.10.5",
+        )
+        mock_runner = MagicMock()
+        mock_runner.setup = AsyncMock()
+        mock_site_instance = MagicMock()
+        mock_site_instance.start = AsyncMock()
+        with (
+            patch(
+                "hue_entertainment.hue_api.web.AppRunner",
+                return_value=mock_runner,
+            ),
+            patch(
+                "hue_entertainment.hue_api.web.TCPSite",
+                return_value=mock_site_instance,
+            ) as mock_site_cls,
+        ):
+            await server.async_start()
+            addr = mock_site_cls.call_args[0][1]
+            assert addr == "192.168.10.5"
+
+    @pytest.mark.asyncio
+    async def test_config_reflects_host_ip(self, api):
+        """When host_ip is set to the bind IP, /api/config advertises it."""
+        client, _ = api
+        resp = await client.get("/api/nouser/config")
+        data = await resp.json()
+        assert data["ipaddress"] == _HOST_IP
