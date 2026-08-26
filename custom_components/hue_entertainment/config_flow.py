@@ -23,12 +23,13 @@ from .const import (
     CONF_PAIR_NOW,
     DEFAULT_API_PORT,
     DOMAIN,
+    LINK_BUTTON_TIMEOUT,
 )
 from .discovery import HueBridgeDiscovery
 from .hue_api import HueAPIServer
 from .user_store import UserStore
 
-PAIRING_TIMEOUT = 60  # seconds
+PAIRING_TIMEOUT = LINK_BUTTON_TIMEOUT
 
 
 def _validate_ipv4(value: str) -> str:

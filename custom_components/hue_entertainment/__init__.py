@@ -128,6 +128,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     watchdog_task: asyncio.Task | None = None
 
+    def _cancel_watchdog() -> None:
+        nonlocal watchdog_task
+        if watchdog_task is not None and not watchdog_task.done():
+            watchdog_task.cancel()
+        watchdog_task = None
+
     async def _frame_watchdog() -> None:
         try:
             while engine.is_active:
@@ -152,13 +158,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         await engine.async_snapshot_lights()
         async_dispatcher_send(hass, SIGNAL_ENTERTAINMENT_CHANGED)
         if watchdog_task is None or watchdog_task.done():
-            watchdog_task = hass.async_create_task(_frame_watchdog())
+            # Owned by the entry: cancelled automatically on unload
+            watchdog_task = entry.async_create_background_task(
+                hass, _frame_watchdog(), name=f"{DOMAIN}_frame_watchdog"
+            )
 
     async def _on_entertainment_stop() -> None:
-        nonlocal watchdog_task
-        if watchdog_task is not None and not watchdog_task.done():
-            watchdog_task.cancel()
-            watchdog_task = None
+        _cancel_watchdog()
         await engine.async_restore_lights()
         async_dispatcher_send(hass, SIGNAL_ENTERTAINMENT_CHANGED)
 
@@ -172,6 +178,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         "discovery": discovery,
         "engine": engine,
         "user_store": user_store,
+        "cancel_watchdog": _cancel_watchdog,
     }
 
     async def _async_start(_event: Event | None = None) -> None:
@@ -190,10 +197,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     async def _async_stop(event: Event) -> None:
         """Clean up on HA shutdown."""
-        nonlocal watchdog_task
-        if watchdog_task is not None and not watchdog_task.done():
-            watchdog_task.cancel()
-            watchdog_task = None
+        _cancel_watchdog()
         await engine.async_restore_lights()
         await dtls_server.async_stop()
         await api_server.async_stop()
@@ -209,7 +213,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
+    # Options (lights, bind IP) are resolved once above — reload to apply changes
+    entry.async_on_unload(entry.add_update_listener(_async_update_listener))
+
     return True
+
+
+async def _async_update_listener(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Reload the entry when its options change."""
+    await hass.config_entries.async_reload(entry.entry_id)
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
@@ -217,6 +229,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
     data = hass.data[DOMAIN].pop(entry.entry_id, {})
     if data:
+        data["cancel_watchdog"]()
         await data["engine"].async_restore_lights()
         await data["dtls_server"].async_stop()
         await data["api_server"].async_stop()

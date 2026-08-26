@@ -15,6 +15,7 @@ from .const import (
     BRIDGE_API_VERSION,
     BRIDGE_MODEL_ID,
     BRIDGE_SW_VERSION,
+    LINK_BUTTON_TIMEOUT,
 )
 from .user_store import UserStore
 
@@ -35,7 +36,7 @@ async def _request_logger(
 class HueAPIServer:
     """Serve the Hue v1 API endpoints needed for TV entertainment mode."""
 
-    LINK_BUTTON_TIMEOUT = 30.0  # seconds, same as real Hue bridge
+    LINK_BUTTON_TIMEOUT = LINK_BUTTON_TIMEOUT
 
     def __init__(
         self,

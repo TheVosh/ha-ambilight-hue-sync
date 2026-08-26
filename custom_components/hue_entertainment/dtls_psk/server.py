@@ -9,11 +9,13 @@ import os
 import socket
 import struct
 import threading
+import time
 from collections.abc import Callable
 from typing import Any
 
 from ._openssl import (
     BIO_NOCLOSE,
+    SSL_ERROR_WANT_READ,
     SSL_ERROR_ZERO_RETURN,
     ffi,
     get_error_string,
@@ -65,6 +67,7 @@ class DTLSPSKServer:
         frame_callback: Callable[[bytes], Any],
         loop: asyncio.AbstractEventLoop | None = None,
         read_timeout: float = 30.0,
+        poll_interval: float = 1.0,
     ) -> None:
         self._host = host
         self._port = port
@@ -72,6 +75,10 @@ class DTLSPSKServer:
         self._frame_callback = frame_callback
         self._loop = loop
         self._read_timeout = read_timeout
+        # Socket receive timeout: how often blocking reads wake up to check
+        # _running, so async_stop() returns promptly instead of waiting for
+        # read_timeout.
+        self._poll_interval = poll_interval
 
         self._running = False
         self._thread: threading.Thread | None = None
@@ -109,7 +116,11 @@ class DTLSPSKServer:
                 pass
 
         if self._thread and self._thread.is_alive():
-            self._thread.join(timeout=5)
+            # join() blocks — keep it off the event loop
+            loop = self._loop or asyncio.get_running_loop()
+            await loop.run_in_executor(None, self._thread.join, self._poll_interval * 5)
+            if self._thread.is_alive():
+                _LOGGER.warning("DTLS server thread did not exit in time")
 
         if self._ssl_ctx != ffi.NULL:
             libssl.SSL_CTX_free(self._ssl_ctx)
@@ -160,12 +171,15 @@ class DTLSPSKServer:
             self._sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             self._sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             self._sock.bind((self._host, self._port))
-            # SO_RCVTIMEO: unblock SSL_read after read_timeout seconds so hard
-            # power-off doesn't leave the read loop blocked forever.
+            # SO_RCVTIMEO: wake blocking reads every poll_interval so the loop
+            # can notice async_stop(); idle sessions are ended after read_timeout
+            # (see _do_accept_and_stream) so a hard power-off can't wedge us.
+            secs = int(self._poll_interval)
+            usecs = int((self._poll_interval - secs) * 1_000_000)
             self._sock.setsockopt(
                 socket.SOL_SOCKET,
                 socket.SO_RCVTIMEO,
-                struct.pack("ll", int(self._read_timeout), 0),
+                struct.pack("ll", secs, usecs),
             )
             _LOGGER.debug("UDP socket bound to %s:%d", self._host, self._port)
         except OSError:
@@ -216,9 +230,11 @@ class DTLSPSKServer:
                 err = libssl.SSL_get_error(ssl, ret)
                 if not self._running:
                     return
-                if ret == 0:
-                    # Non-fatal: stale packet or incomplete ClientHello — caller retries
-                    _LOGGER.debug("DTLSv1_listen: non-fatal (ret=0, err=%d), retrying", err)
+                if ret == 0 or err == SSL_ERROR_WANT_READ:
+                    # Non-fatal: receive timeout, stale packet or incomplete
+                    # ClientHello — caller retries
+                    if err != SSL_ERROR_WANT_READ:
+                        _LOGGER.debug("DTLSv1_listen: non-fatal (ret=0, err=%d), retrying", err)
                     return
                 raise RuntimeError(
                     f"DTLSv1_listen failed (ret={ret}, err={err}): {get_error_string()}"
@@ -228,10 +244,17 @@ class DTLSPSKServer:
 
         _LOGGER.debug("DTLS ClientHello received, performing handshake...")
 
-        # Complete the handshake
-        ret = libssl.SSL_do_handshake(ssl)
-        if ret != 1:
+        # Complete the handshake (retry on receive timeouts up to read_timeout)
+        deadline = time.monotonic() + self._read_timeout
+        while True:
+            ret = libssl.SSL_do_handshake(ssl)
+            if ret == 1:
+                break
             err = libssl.SSL_get_error(ssl, ret)
+            if not self._running:
+                return
+            if err == SSL_ERROR_WANT_READ and time.monotonic() < deadline:
+                continue
             raise RuntimeError(
                 f"SSL_do_handshake failed (ret={ret}, err={err}): {get_error_string()}"
             )
@@ -240,6 +263,7 @@ class DTLSPSKServer:
 
         # Read loop
         buf = ffi.new(f"unsigned char[{_READ_BUF_SIZE}]")
+        last_frame = time.monotonic()
         while self._running:
             ret = libssl.SSL_read(ssl, buf, _READ_BUF_SIZE)
             if ret <= 0:
@@ -249,6 +273,12 @@ class DTLSPSKServer:
                     break
                 if not self._running:
                     break
+                if err == SSL_ERROR_WANT_READ:
+                    # Receive timeout — keep the session unless it has gone idle
+                    if time.monotonic() - last_frame < self._read_timeout:
+                        continue
+                    _LOGGER.info("No DTLS data for %.0fs, ending session", self._read_timeout)
+                    break
                 _LOGGER.warning(
                     "SSL_read error (ret=%d, err=%d): %s",
                     ret,
@@ -257,6 +287,7 @@ class DTLSPSKServer:
                 )
                 break
 
+            last_frame = time.monotonic()
             frame = bytes(ffi.buffer(buf, ret))
             self._dispatch_frame(frame)
 

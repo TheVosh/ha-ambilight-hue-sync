@@ -48,6 +48,24 @@ class TestDTLSPSKServer:
         await server.async_stop()
 
     @pytest.mark.asyncio
+    async def test_stop_is_prompt_while_listening(self):
+        """async_stop returns within a few poll intervals and the thread exits."""
+        server = DTLSPSKServer(
+            host="127.0.0.1",
+            port=TEST_PORT,
+            psk_callback=psk_callback,
+            frame_callback=lambda _f: None,
+            read_timeout=30.0,
+            poll_interval=0.2,
+        )
+        await server.async_start()
+        await asyncio.sleep(0.3)  # thread is now blocked in DTLSv1_listen
+        started = time.monotonic()
+        await server.async_stop()
+        assert time.monotonic() - started < 2.0
+        assert server._thread is not None and not server._thread.is_alive()
+
+    @pytest.mark.asyncio
     async def test_dtls_handshake_and_receive(self):
         """Server completes DTLS handshake and receives data."""
         frames: list[bytes] = []

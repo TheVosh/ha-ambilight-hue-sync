@@ -39,3 +39,5 @@ RESTORE_TRANSITION = 1.5  # seconds for light transition on restore
 
 # Dispatcher signal
 SIGNAL_ENTERTAINMENT_CHANGED = f"{DOMAIN}_entertainment_changed"
+
+LINK_BUTTON_TIMEOUT = 60.0  # seconds the link button stays pressed (config flow waits this long)
