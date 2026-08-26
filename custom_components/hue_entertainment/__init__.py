@@ -198,10 +198,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     async def _async_stop(event: Event) -> None:
         """Clean up on HA shutdown."""
         _cancel_watchdog()
-        await engine.async_restore_lights()
+        # Stop the servers first: HA's shutdown budget is short, and if the
+        # light restore (transition) gets cut off the DTLS thread must not
+        # outlive the event loop.
         await dtls_server.async_stop()
         await api_server.async_stop()
         await discovery.async_stop()
+        await engine.async_restore_lights()
         _LOGGER.info("Hue Entertainment Bridge stopped")
 
     if hass.state is CoreState.running:

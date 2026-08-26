@@ -29,7 +29,7 @@
       }
     },
     "progress": {
-      "waiting_for_tv": "Waiting for your TV to pair\u2026"
+      "waiting_for_tv": "Waiting for your TV to pair…"
     },
     "abort": {
       "already_configured": "Hue Entertainment Bridge is already configured."
@@ -60,7 +60,10 @@
       }
     },
     "progress": {
-      "waiting_for_tv": "Waiting for your TV to pair\u2026"
+      "waiting_for_tv": "Waiting for your TV to pair…"
+    },
+    "error": {
+      "invalid_ip": "Not a valid IPv4 address"
     }
   }
 }

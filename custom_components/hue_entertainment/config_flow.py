@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import socket
 import uuid
 
@@ -32,16 +33,13 @@ from .user_store import UserStore
 PAIRING_TIMEOUT = LINK_BUTTON_TIMEOUT
 
 
-def _validate_ipv4(value: str) -> str:
-    """Voluptuous validator: accept empty string or a valid IPv4 address."""
-    value = value.strip()
-    if not value:
-        return value
+def _is_ipv4(value: str) -> bool:
+    """True for a well-formed dotted-quad IPv4 address."""
     try:
-        socket.inet_aton(value)
-    except OSError as err:
-        raise vol.Invalid(f"Invalid IPv4 address: {value}") from err
-    return value
+        ipaddress.IPv4Address(value)
+    except ValueError:
+        return False
+    return True
 
 
 async def _wait_for_new_user(
@@ -218,15 +216,19 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
 
     async def async_step_init(self, user_input=None):
         """Show lights selection and optional re-pair toggle."""
+        errors: dict[str, str] = {}
         if user_input is not None:
             self._lights = user_input[CONF_LIGHTS]
             raw_ip = (user_input.get(CONF_BIND_IP) or "").strip()
-            self._bind_ip = raw_ip or None
-            if user_input.get(CONF_PAIR_NOW, False):
-                return await self.async_step_pairing()
-            return self.async_create_entry(
-                title="", data={CONF_LIGHTS: self._lights, CONF_BIND_IP: self._bind_ip}
-            )
+            if raw_ip and not _is_ipv4(raw_ip):
+                errors[CONF_BIND_IP] = "invalid_ip"
+            else:
+                self._bind_ip = raw_ip or None
+                if user_input.get(CONF_PAIR_NOW, False):
+                    return await self.async_step_pairing()
+                return self.async_create_entry(
+                    title="", data={CONF_LIGHTS: self._lights, CONF_BIND_IP: self._bind_ip}
+                )
 
         current_lights = self.config_entry.options.get(
             CONF_LIGHTS, self.config_entry.data.get(CONF_LIGHTS, [])
@@ -237,6 +239,10 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
             )
             or ""
         )
+        if user_input is not None:
+            # Re-show what the user typed
+            current_lights = user_input[CONF_LIGHTS]
+            current_bind_ip = user_input.get(CONF_BIND_IP, "")
         return self.async_show_form(
             step_id="init",
             data_schema=vol.Schema(
@@ -245,11 +251,12 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                         EntitySelectorConfig(domain="light", multiple=True)
                     ),
                     vol.Optional(CONF_PAIR_NOW, default=False): BooleanSelector(),
-                    vol.Optional(CONF_BIND_IP, default=current_bind_ip): vol.All(
-                        TextSelector(), _validate_ipv4
-                    ),
+                    # Plain selector: validators inside the schema can't be
+                    # serialised for the frontend (voluptuous_serialize)
+                    vol.Optional(CONF_BIND_IP, default=current_bind_ip): TextSelector(),
                 }
             ),
+            errors=errors,
         )
 
     async def async_step_pairing(self, user_input=None):

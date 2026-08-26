@@ -61,6 +61,9 @@
     },
     "progress": {
       "waiting_for_tv": "En attente de l'association de votre téléviseur…"
+    },
+    "error": {
+      "invalid_ip": "Adresse IPv4 invalide"
     }
   }
 }
