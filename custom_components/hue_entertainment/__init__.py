@@ -210,7 +210,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     if hass.state is CoreState.running:
         await _async_start()
     else:
-        entry.async_on_unload(hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STARTED, _async_start))
+        unsub_started = hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STARTED, _async_start)
+
+        def _cancel_deferred_start() -> None:
+            # A fired one-shot listener has already removed itself; removing it
+            # again makes HA log "Unable to remove unknown job listener".
+            if hass.state is not CoreState.running:
+                unsub_started()
+
+        entry.async_on_unload(_cancel_deferred_start)
 
     entry.async_on_unload(hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STOP, _async_stop))
 
