@@ -69,6 +69,7 @@ class HueAPIServer:
         # Callbacks
         self._on_entertainment_start: Callable[[str], Awaitable[None]] | None = None
         self._on_entertainment_stop: Callable[[], Awaitable[None]] | None = None
+        self._on_light_command: Callable[[int, dict], None] | None = None
 
         self._http_runner: web.AppRunner | None = None
 
@@ -80,6 +81,10 @@ class HueAPIServer:
         """Set callbacks for entertainment start/stop."""
         self._on_entertainment_start = on_start
         self._on_entertainment_stop = on_stop
+
+    def set_light_command_callback(self, callback: Callable[[int, dict], None]) -> None:
+        """Receive v1 ``PUT /lights/{id}/state`` bodies (TV classic mode)."""
+        self._on_light_command = callback
 
     @property
     def entertainment_active(self) -> bool:
@@ -486,6 +491,8 @@ class HueAPIServer:
                 ]
             )
         _LOGGER.debug("Light %s state update: %s", light_id, body)
+        if self._on_light_command is not None and light_id.isdigit():
+            self._on_light_command(int(light_id), body)
         result = [{"success": {f"/lights/{light_id}/state/{k}": v}} for k, v in body.items()]
         return web.json_response(result)
 

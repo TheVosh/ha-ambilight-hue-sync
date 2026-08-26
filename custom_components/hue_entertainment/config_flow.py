@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import ipaddress
-import socket
+import logging
 import uuid
 
 import voluptuous as vol
 from homeassistant import config_entries
+from homeassistant.components.network import async_get_source_ip
 from homeassistant.components.zeroconf import async_get_async_instance
 from homeassistant.helpers.selector import (
     BooleanSelector,
@@ -32,6 +33,8 @@ from .user_store import UserStore
 
 PAIRING_TIMEOUT = LINK_BUTTON_TIMEOUT
 
+_LOGGER = logging.getLogger(__name__)
+
 
 def _is_ipv4(value: str) -> bool:
     """True for a well-formed dotted-quad IPv4 address."""
@@ -53,16 +56,6 @@ async def _wait_for_new_user(
             return True
         await asyncio.sleep(0.5)
     return False
-
-
-def _probe_host_ip() -> str:
-    """Get local IP via UDP routing probe (no packets sent)."""
-    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    try:
-        s.connect(("8.8.8.8", 80))
-        return s.getsockname()[0]
-    finally:
-        s.close()
 
 
 def mac_from_bridge_id(bridge_id: str) -> str:
@@ -137,7 +130,7 @@ class HueEntertainmentConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):  # t
     async def async_step_pairing(self, user_input=None):
         """Step 3: start a temporary bridge and wait for the TV to pair."""
         if self._pairing_task is None:
-            host_ip = await self.hass.async_add_executor_job(_probe_host_ip)
+            host_ip = await async_get_source_ip(self.hass)
             self._temp_user_store = UserStore()
             self._temp_api = HueAPIServer(
                 bridge_id=self._bridge_id,
@@ -148,7 +141,14 @@ class HueEntertainmentConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):  # t
                 light_entities=self._lights,
                 user_store=self._temp_user_store,
             )
-            await self._temp_api.async_start()
+            try:
+                await self._temp_api.async_start()
+            except OSError:
+                _LOGGER.warning(
+                    "Port %d is in use; cannot open the pairing window", DEFAULT_API_PORT
+                )
+                await self._cleanup_temp_servers()
+                return self.async_abort(reason="port_in_use")
             self._temp_api.set_link_button(True)
 
             async_zc = await async_get_async_instance(self.hass)

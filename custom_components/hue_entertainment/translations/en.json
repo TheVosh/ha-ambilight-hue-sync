@@ -32,7 +32,8 @@
       "waiting_for_tv": "Waiting for your TV to pair…"
     },
     "abort": {
-      "already_configured": "Hue Entertainment Bridge is already configured."
+      "already_configured": "Hue Entertainment Bridge is already configured.",
+      "port_in_use": "Port 80 is already in use on the Home Assistant host, so the bridge cannot start. See the README for port-conflict options, then try again."
     }
   },
   "options": {

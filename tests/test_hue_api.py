@@ -759,3 +759,14 @@ class TestBindIP:
         resp = await client.get("/api/nouser/config")
         data = await resp.json()
         assert data["ipaddress"] == _HOST_IP
+
+
+class TestLightCommandCallback:
+    @pytest.mark.asyncio
+    async def test_light_state_put_forwards_to_callback(self, api):
+        client, server = api
+        received = []
+        server.set_light_command_callback(lambda lid, body: received.append((lid, body)))
+        resp = await client.put("/api/someuser/lights/2/state", json={"xy": [0.1, 0.2]})
+        assert resp.status == 200
+        assert received == [(2, {"xy": [0.1, 0.2]})]

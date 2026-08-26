@@ -36,6 +36,7 @@ TARGET_FPS = 15
 FRAME_WATCHDOG_INTERVAL = 2.0  # seconds between watchdog polls
 FRAME_TIMEOUT = 5.0  # seconds of silence before auto-stop
 RESTORE_TRANSITION = 1.5  # seconds for light transition on restore
+CLASSIC_DRAIN_IDLE = 2.0  # seconds without classic-mode commands before the drain loop exits
 
 # Dispatcher signal
 SIGNAL_ENTERTAINMENT_CHANGED = f"{DOMAIN}_entertainment_changed"

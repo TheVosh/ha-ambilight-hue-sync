@@ -3,15 +3,17 @@
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import logging
-import socket
 import time
 from urllib.parse import urlparse
 
+from homeassistant.components.network import async_get_source_ip
 from homeassistant.components.zeroconf import async_get_async_instance
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import EVENT_HOMEASSISTANT_STARTED, EVENT_HOMEASSISTANT_STOP, Platform
 from homeassistant.core import CoreState, Event, HomeAssistant
+from homeassistant.exceptions import ConfigEntryNotReady
 from homeassistant.helpers.dispatcher import async_dispatcher_send
 from homeassistant.helpers.network import get_url
 from homeassistant.helpers.storage import Store
@@ -33,7 +35,7 @@ from .const import (
 )
 from .discovery import HueBridgeDiscovery
 from .dtls_psk import DTLSPSKServer
-from .entertainment import EntertainmentEngine, LightMapping
+from .entertainment import EntertainmentEngine, FrameMailbox, LightMapping
 from .hue_api import HueAPIServer
 from .user_store import UserStore
 
@@ -54,7 +56,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     if bind_ip:
         host_ip = bind_ip
     else:
-        host_ip = await hass.async_add_executor_job(_get_host_ip, hass)
+        host_ip = await _async_get_host_ip(hass)
 
     # Resolve port config (options take precedence over data, data over defaults)
     ent_port = entry.options.get(
@@ -109,12 +111,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     # DTLS library logs under "dtls_psk.server" (separate from this integration).
     # Enable with: logger: logs: dtls_psk.server: debug
+    # Frames are handed over through a single-slot mailbox (freshest wins) so a
+    # stalled loop never accumulates a backlog of stale frames.
+    mailbox = FrameMailbox(hass.loop, engine.handle_frame)
     dtls_server = DTLSPSKServer(
         host=bind_ip or "0.0.0.0",
         port=ent_port,
         psk_callback=psk_lookup,
-        frame_callback=engine.handle_frame,
-        loop=hass.loop,
+        frame_callback=mailbox.put,
+        loop=None,  # mailbox.put is thread-safe; it schedules onto hass.loop itself
     )
 
     # mDNS discovery — use HA's shared zeroconf instance
@@ -169,6 +174,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         async_dispatcher_send(hass, SIGNAL_ENTERTAINMENT_CHANGED)
 
     api_server.set_entertainment_callbacks(_on_entertainment_start, _on_entertainment_stop)
+    # TV "classic" mode (no DTLS stream): per-light REST commands follow the
+    # same Zigbee-paced drain loop.
+    api_server.set_light_command_callback(engine.handle_light_command)
 
     # Store references for teardown and OptionsFlow access
     hass.data.setdefault(DOMAIN, {})
@@ -183,8 +191,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     async def _async_start(_event: Event | None = None) -> None:
         """Start servers once HA is fully running."""
-        await api_server.async_start()
-        await dtls_server.async_start()
+        try:
+            await api_server.async_start()
+            await dtls_server.async_start()
+        except OSError as err:
+            # Port in use (typically :80) or bind IP not on this host.
+            await dtls_server.async_stop()
+            await api_server.async_stop()
+            raise ConfigEntryNotReady(
+                f"Cannot bind Hue bridge ports (http={http_port}, dtls={ent_port}): {err}"
+            ) from err
         await discovery.async_start()
         _LOGGER.info(
             "Hue Entertainment Bridge started: bridge_id=%s, http=:%d, dtls=:%d, lights=%d, users=%d",
@@ -210,7 +226,18 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     if hass.state is CoreState.running:
         await _async_start()
     else:
-        unsub_started = hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STARTED, _async_start)
+
+        async def _async_deferred_start(_event: Event) -> None:
+            try:
+                await _async_start()
+            except ConfigEntryNotReady as err:
+                # Too late to fail setup — surface it and let HA retry via reload.
+                _LOGGER.error("%s — reloading to retry", err)
+                hass.config_entries.async_schedule_reload(entry.entry_id)
+
+        unsub_started = hass.bus.async_listen_once(
+            EVENT_HOMEASSISTANT_STARTED, _async_deferred_start
+        )
 
         def _cancel_deferred_start() -> None:
             # A fired one-shot listener has already removed itself; removing it
@@ -248,19 +275,20 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     return unload_ok
 
 
-def _get_host_ip(hass: HomeAssistant) -> str:
-    """Get the primary IP address of the HA host."""
+async def _async_get_host_ip(hass: HomeAssistant) -> str:
+    """IP to advertise to the TV: HA's internal URL host if it is an IP, else the source IP."""
     try:
-        url = get_url(hass, prefer_external=False)
-        parsed = urlparse(url)
-        host = parsed.hostname
-        if host and not is_loopback(host):
+        host = urlparse(get_url(hass, prefer_external=False)).hostname
+        if host and not is_loopback(host) and _is_ip(host):
             return host
-    except Exception:
-        _LOGGER.debug("Could not resolve host IP from HA config, falling back to UDP probe")
-    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    except Exception:  # noqa: BLE001
+        _LOGGER.debug("No usable internal URL; using HA's source IP")
+    return await async_get_source_ip(hass)
+
+
+def _is_ip(value: str) -> bool:
     try:
-        s.connect(("8.8.8.8", 80))
-        return s.getsockname()[0]
-    finally:
-        s.close()
+        ipaddress.ip_address(value)
+    except ValueError:
+        return False
+    return True

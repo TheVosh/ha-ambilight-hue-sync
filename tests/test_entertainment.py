@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import importlib.util
 import struct
 import sys
@@ -710,3 +711,179 @@ class TestResetStats:
         engine._first_frame_logged = True
         engine.reset_stats()
         assert engine._first_frame_logged is False
+
+
+# ---------------------------------------------------------------------------
+# FrameMailbox — single-slot hand-off from the DTLS thread
+# ---------------------------------------------------------------------------
+
+FrameMailbox = _ent.FrameMailbox
+_v1_state_to_service_data = _ent._v1_state_to_service_data
+
+
+class TestFrameMailbox:
+    def test_freshest_frame_wins_and_only_one_callback_is_scheduled(self):
+        loop = MagicMock()
+        handled = []
+        box = FrameMailbox(loop, handled.append)
+        box.put(b"one")
+        box.put(b"two")
+        box.put(b"three")
+        assert loop.call_soon_threadsafe.call_count == 1
+        assert box.dropped == 2
+        # Simulate the loop running the scheduled callback
+        loop.call_soon_threadsafe.call_args[0][0]()
+        assert handled == [b"three"]
+        # Slot is free again: next frame schedules a new callback
+        box.put(b"four")
+        assert loop.call_soon_threadsafe.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_delivers_on_a_real_loop(self):
+        loop = asyncio.get_running_loop()
+        got = asyncio.Event()
+        frames = []
+
+        def handler(f):
+            frames.append(f)
+            got.set()
+
+        box = FrameMailbox(loop, handler)
+        await loop.run_in_executor(None, box.put, b"frame")
+        await asyncio.wait_for(got.wait(), 1)
+        assert frames == [b"frame"]
+
+
+# ---------------------------------------------------------------------------
+# Classic mode — v1 PUT /lights/{id}/state → service data
+# ---------------------------------------------------------------------------
+
+
+class TestV1StateTranslation:
+    def test_xy_bri_transition(self):
+        d = _v1_state_to_service_data({"xy": [0.3, 0.4], "bri": 127, "transitiontime": 4})
+        assert d["_service"] == "turn_on"
+        assert d["xy_color"] == [0.3, 0.4]
+        assert d["brightness"] == round(127 * 255 / 254)
+        assert d["transition"] == 0.4
+
+    def test_off(self):
+        d = _v1_state_to_service_data({"on": False, "transitiontime": 10})
+        assert d == {"_service": "turn_off", "transition": 1.0}
+
+    def test_hue_sat_and_ct(self):
+        assert _v1_state_to_service_data({"hue": 32768, "sat": 254})["hs_color"] == [180.0, 100.0]
+        assert _v1_state_to_service_data({"ct": 250})["color_temp_kelvin"] == 4000
+
+    def test_on_only_is_a_bare_turn_on(self):
+        assert _v1_state_to_service_data({"on": True}) == {"_service": "turn_on"}
+
+    def test_empty_or_unknown_keys_are_ignored(self):
+        assert _v1_state_to_service_data({}) == {}
+        assert _v1_state_to_service_data({"alert": "select"}) == {}
+
+
+class TestHandleLightCommand:
+    def test_merges_successive_puts_for_one_light(self):
+        engine, hass = _make_engine(channels=3)
+        hass.async_create_task.return_value.done.return_value = False
+        engine.handle_light_command(1, {"xy": [0.3, 0.4], "transitiontime": 4})
+        engine.handle_light_command(1, {"bri": 254, "transitiontime": 4})
+        m = engine._mappings[1]
+        assert m.dirty and m.explicit_transition
+        assert m.pending_data["entity_id"] == "light.test_1"
+        assert m.pending_data["xy_color"] == [0.3, 0.4]
+        assert m.pending_data["brightness"] == 255
+        hass.async_create_task.assert_called_once()  # drain loop started
+
+    def test_off_discards_queued_colour(self):
+        engine, _ = _make_engine(channels=2)
+        engine.handle_light_command(1, {"xy": [0.3, 0.4]})
+        engine.handle_light_command(1, {"on": False})
+        assert engine._mappings[1].pending_data == {
+            "_service": "turn_off",
+            "entity_id": "light.test_1",
+        }
+
+    def test_unknown_light_ignored(self):
+        engine, hass = _make_engine(channels=1)
+        engine.handle_light_command(9, {"on": True})
+        hass.async_create_task.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Drain loop — really runs on the event loop
+# ---------------------------------------------------------------------------
+
+
+def _make_live_engine(channels: int = 2, states: dict | None = None):
+    """Engine on a real loop; hass.services.async_call is an AsyncMock."""
+    hass = MagicMock()
+    hass.async_create_task = lambda coro: asyncio.get_running_loop().create_task(coro)
+    hass.services.async_call = AsyncMock()
+    # async_restore_lights imports homeassistant.helpers.state lazily
+    helpers_state = MagicMock()
+    helpers_state.async_reproduce_state = AsyncMock()
+    sys.modules.setdefault("homeassistant.helpers", MagicMock())
+    sys.modules["homeassistant.helpers.state"] = helpers_state
+    states = states or {}
+
+    def get_state(entity_id):
+        st = MagicMock()
+        st.state = states.get(entity_id, "on")
+        return st
+
+    hass.states.get = get_state
+    mappings = [LightMapping(channel_id=i, entity_id=f"light.test_{i}") for i in range(channels)]
+    return EntertainmentEngine(hass, mappings), hass
+
+
+class TestDrainLoop:
+    @pytest.mark.asyncio
+    async def test_classic_commands_are_sent_and_loop_exits_when_idle(self):
+        engine, hass = _make_live_engine()
+        with patch.object(_ent, "CLASSIC_DRAIN_IDLE", 0.05):
+            engine.handle_light_command(0, {"xy": [0.3, 0.4], "bri": 254, "transitiontime": 4})
+            engine.handle_light_command(1, {"on": False})
+            await asyncio.sleep(0.2)
+        calls = hass.services.async_call.await_args_list
+        assert [c.args[1] for c in calls] == ["turn_on", "turn_off"]
+        assert calls[0].args[2] == {
+            "entity_id": "light.test_0",
+            "xy_color": [0.3, 0.4],
+            "brightness": 255,
+            "transition": 0.4,
+        }
+        assert engine._drain_task.done()
+
+    @pytest.mark.asyncio
+    async def test_unavailable_light_is_skipped_and_logged_once(self, caplog):
+        engine, hass = _make_live_engine(states={"light.test_0": "unavailable"})
+        with patch.object(_ent, "CLASSIC_DRAIN_IDLE", 0.05):
+            engine.handle_light_command(0, {"on": True})
+            engine.handle_light_command(1, {"on": True})
+            await asyncio.sleep(0.1)
+            engine.handle_light_command(0, {"bri": 10})
+            await asyncio.sleep(0.15)
+        entities = [c.args[2]["entity_id"] for c in hass.services.async_call.await_args_list]
+        assert entities == ["light.test_1"]
+        assert caplog.text.count("light.test_0 is unavailable") == 1
+
+    @pytest.mark.asyncio
+    async def test_stream_frames_get_dynamic_transition(self):
+        engine, hass = _make_live_engine(channels=1)
+        await engine.async_snapshot_lights()
+        engine._schedule_update(ChannelColor(0, 30000, 30000, 60000), COLOR_SPACE_XY)
+        await asyncio.sleep(0.05)
+        first = hass.services.async_call.await_args_list[0].args[2]
+        assert first["transition"] == 0  # first command snaps
+        await engine.async_restore_lights()
+
+    @pytest.mark.asyncio
+    async def test_snapshot_is_not_retaken_while_active(self):
+        engine, hass = _make_live_engine(channels=1)
+        await engine.async_snapshot_lights()
+        saved = engine._saved_states
+        await engine.async_snapshot_lights()
+        assert engine._saved_states is saved
+        await engine.async_restore_lights()

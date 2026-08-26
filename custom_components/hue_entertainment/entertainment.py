@@ -5,7 +5,9 @@ from __future__ import annotations
 import asyncio
 import logging
 import struct
+import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -15,12 +17,15 @@ if TYPE_CHECKING:
 from .const import (
     BRIGHTNESS_TOLERANCE,
     CIE_TOLERANCE,
+    CLASSIC_DRAIN_IDLE,
     COLOR_SPACE_XY,
     HUESTREAM_CHANNEL_SIZE,
     HUESTREAM_HEADER,
     HUESTREAM_HEADER_SIZE,
     RESTORE_TRANSITION,
 )
+
+STATE_UNAVAILABLE = "unavailable"  # homeassistant.const, inlined so the module imports without HA
 
 # V1 protocol sizes (not in const.py — only used here)
 _V1_HEADER_SIZE = 16
@@ -60,6 +65,10 @@ class LightMapping:
     dirty: bool = False
     # Timestamp of last successful send — used to derive dynamic transition
     last_sent: float = 0.0
+    # Classic mode (v1 REST): pending_data carries its own transition
+    explicit_transition: bool = False
+    # Logged once per unavailable spell so the drain loop doesn't spam
+    unavailable_logged: bool = False
 
 
 def _parse_v2_channels(data: bytes) -> list[ChannelColor]:
@@ -122,6 +131,80 @@ def parse_huestream_frame(
         return None
 
     return (api_version, color_space, channels)
+
+
+def _v1_state_to_service_data(body: dict[str, Any]) -> dict[str, Any]:
+    """Translate a Hue v1 light state body into light.turn_on/turn_off data."""
+    data: dict[str, Any] = {}
+    if "transitiontime" in body:
+        try:
+            data["transition"] = max(int(body["transitiontime"]), 0) / 10
+        except (TypeError, ValueError):
+            pass
+    if body.get("on") is False:
+        data["_service"] = "turn_off"
+        return data
+    if "bri" in body:
+        try:
+            bri = int(body["bri"])
+        except (TypeError, ValueError):
+            bri = 254
+        data["brightness"] = max(1, min(255, round(bri * 255 / 254)))
+    xy = body.get("xy")
+    if isinstance(xy, list) and len(xy) == 2:
+        data["xy_color"] = [float(xy[0]), float(xy[1])]
+    elif "hue" in body or "sat" in body:
+        hue = float(body.get("hue", 0)) / 65535 * 360
+        sat = float(body.get("sat", 254)) / 254 * 100
+        data["hs_color"] = [round(hue, 2), round(sat, 2)]
+    elif "ct" in body:
+        try:
+            mired = int(body["ct"])
+            if mired > 0:
+                data["color_temp_kelvin"] = round(1_000_000 / mired)
+        except (TypeError, ValueError):
+            pass
+    if not data and body.get("on") is not True:
+        return {}
+    data["_service"] = "turn_on"
+    return data
+
+
+class FrameMailbox:
+    """Single-slot hand-off from the DTLS thread to the event loop.
+
+    The TV sends ~25 frames/s; if the loop ever stalls, queuing every frame
+    with ``call_soon_threadsafe`` would let a backlog build.  Keeping only the
+    freshest frame and scheduling at most one loop callback at a time bounds
+    the work to one parse per loop iteration.
+    """
+
+    def __init__(self, loop: asyncio.AbstractEventLoop, handler: Callable[[bytes], None]) -> None:
+        self._loop = loop
+        self._handler = handler
+        self._lock = threading.Lock()
+        self._latest: bytes | None = None
+        self._scheduled = False
+        self.dropped = 0
+
+    def put(self, frame: bytes) -> None:
+        """Thread-safe: store the freshest frame and wake the loop once."""
+        with self._lock:
+            if self._latest is not None:
+                self.dropped += 1
+            self._latest = frame
+            if self._scheduled:
+                return
+            self._scheduled = True
+        self._loop.call_soon_threadsafe(self._deliver)
+
+    def _deliver(self) -> None:
+        with self._lock:
+            frame = self._latest
+            self._latest = None
+            self._scheduled = False
+        if frame is not None:
+            self._handler(frame)
 
 
 class EntertainmentEngine:
@@ -242,8 +325,17 @@ class EntertainmentEngine:
             m.last_r = m.last_g = m.last_b = -1
             m.last_sent = 0.0
 
+    def _ensure_drain_task(self) -> None:
+        if self._drain_task is None or self._drain_task.done():
+            self._drain_task = self._hass.async_create_task(self._drain_loop())
+
     async def async_snapshot_lights(self) -> None:
         """Snapshot current light states so they can be restored after entertainment."""
+        if self._active:
+            # A second stream.active=true mid-session (TV re-toggle) must not
+            # overwrite the pre-entertainment snapshot with streaming colours.
+            _LOGGER.debug("Entertainment already active; keeping existing snapshot")
+            return
         states: list[State] = []
         for mapping in self._mappings.values():
             state = self._hass.states.get(mapping.entity_id)
@@ -253,9 +345,7 @@ class EntertainmentEngine:
         self._reset_mappings()
         self._active = True
         self.last_frame_time = time.monotonic()
-        # Start the adaptive drain loop
-        if self._drain_task is None or self._drain_task.done():
-            self._drain_task = self._hass.async_create_task(self._drain_loop())
+        self._ensure_drain_task()
         _LOGGER.info("Snapshotted %d light states for restore", len(states))
 
     async def async_restore_lights(self) -> None:
@@ -292,44 +382,93 @@ class EntertainmentEngine:
         throughput — no timer to tune.  Lights always get the most recent colour.
         """
         mappings = list(self._mappings.values())
+        idle_since: float | None = None
         try:
-            while self._active:
+            while True:
                 sent_any = False
                 for mapping in mappings:
-                    if not self._active:
-                        return
                     if not mapping.dirty:
                         continue
                     # Grab and clear the slot atomically (single-threaded event loop)
                     data = mapping.pending_data
+                    explicit = mapping.explicit_transition
                     mapping.dirty = False
                     mapping.pending_data = None
+                    mapping.explicit_transition = False
                     if data is None:
+                        continue
+                    if not self._light_available(mapping):
                         continue
                     sent_any = True
                     self._total_commands_sent += 1
                     self._window_commands += 1
-                    # Dynamic transition: fade over the time since this light's
-                    # last update so the colour ramps smoothly instead of stepping.
                     now = time.monotonic()
-                    if mapping.last_sent > 0:
-                        interval = now - mapping.last_sent
-                        # Clamp to [0.1, 2.0]s — avoid 0 (snappy) or huge (first cmd)
-                        data["transition"] = min(max(round(interval, 1), 0.1), 2.0)
-                    else:
-                        data["transition"] = 0  # first command: snap immediately
+                    service = data.pop("_service", "turn_on")
+                    if not explicit:
+                        # Dynamic transition: fade over the time since this
+                        # light's last update so colour ramps instead of stepping.
+                        if mapping.last_sent > 0:
+                            interval = now - mapping.last_sent
+                            # Clamp to [0.1, 2.0]s — avoid 0 (snappy) or huge (first cmd)
+                            data["transition"] = min(max(round(interval, 1), 0.1), 2.0)
+                        else:
+                            data["transition"] = 0  # first command: snap immediately
                     mapping.last_sent = now
                     try:
-                        await self._hass.services.async_call(
-                            "light", "turn_on", data, blocking=True
-                        )
+                        await self._hass.services.async_call("light", service, data, blocking=True)
                     except Exception:  # noqa: BLE001
                         _LOGGER.debug("Failed to update %s", mapping.entity_id, exc_info=True)
-                if not sent_any:
-                    # Nothing dirty — yield briefly to let new frames arrive
-                    await asyncio.sleep(0.005)
+                if sent_any:
+                    idle_since = None
+                    continue
+                if not self._active:
+                    # Classic mode (no stream): exit once nothing has been
+                    # queued for a while; the next command restarts the loop.
+                    now = time.monotonic()
+                    if idle_since is None:
+                        idle_since = now
+                    elif now - idle_since > CLASSIC_DRAIN_IDLE:
+                        return
+                # Nothing dirty — yield briefly to let new frames arrive
+                await asyncio.sleep(0.005)
         except asyncio.CancelledError:
             return
+
+    def _light_available(self, mapping: LightMapping) -> bool:
+        """Skip lights HA reports as unavailable (a blocking call would stall the loop)."""
+        state = self._hass.states.get(mapping.entity_id)
+        if state is not None and state.state == STATE_UNAVAILABLE:
+            if not mapping.unavailable_logged:
+                _LOGGER.warning("%s is unavailable; skipping until it returns", mapping.entity_id)
+                mapping.unavailable_logged = True
+            return False
+        if mapping.unavailable_logged:
+            _LOGGER.info("%s is available again", mapping.entity_id)
+            mapping.unavailable_logged = False
+        return True
+
+    def handle_light_command(self, light_id: int, body: dict[str, Any]) -> None:
+        """Apply a v1 ``PUT /lights/{id}/state`` body (TV classic mode).
+
+        Successive PUTs for one light are merged into its slot (the TV sends
+        ``xy`` and ``bri`` as separate requests) and drained at Zigbee pace.
+        No snapshot/restore: like a real bridge, the lights just follow.
+        """
+        mapping = self._mappings.get(light_id)
+        if mapping is None:
+            return
+        data = _v1_state_to_service_data(body)
+        if not data:
+            return
+        pending = mapping.pending_data if mapping.dirty and mapping.pending_data else {}
+        if data.get("_service") == "turn_off":
+            pending = {}  # anything queued before an "off" is moot
+        pending.update(data)
+        pending["entity_id"] = mapping.entity_id
+        mapping.pending_data = pending
+        mapping.explicit_transition = True
+        mapping.dirty = True
+        self._ensure_drain_task()
 
     def _schedule_update(self, channel: ChannelColor, color_space: int) -> None:
         """Write the freshest colour into a light's slot if it changed enough.

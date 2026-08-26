@@ -32,7 +32,8 @@
       "waiting_for_tv": "En attente de l'association de votre téléviseur…"
     },
     "abort": {
-      "already_configured": "Le pont de divertissement Hue (Hue Entertainment Bridge) est déjà configuré."
+      "already_configured": "Le pont de divertissement Hue (Hue Entertainment Bridge) est déjà configuré.",
+      "port_in_use": "Le port 80 est déjà utilisé sur l'hôte Home Assistant, le pont ne peut pas démarrer. Voir le README pour les options de conflit de port, puis réessayer."
     }
   },
   "options": {
