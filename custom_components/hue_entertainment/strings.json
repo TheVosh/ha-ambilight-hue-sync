@@ -1,0 +1,70 @@
+{
+  "entity": {
+    "binary_sensor": {
+      "entertainment_active": {
+        "name": "Ambilight active"
+      }
+    }
+  },
+  "config": {
+    "step": {
+      "user": {
+        "title": "Select lights",
+        "description": "Choose which lights will be included in the entertainment area.",
+        "data": {
+          "lights": "Lights"
+        }
+      },
+      "pre_pairing": {
+        "title": "Ready to pair",
+        "description": "The next step will start a 60-second pairing window.\n\nBefore pressing **Next**, open your TV's settings and navigate to **Ambilight > Ambilight+hue** so it's ready to search for the bridge."
+      },
+      "pairing": {
+        "title": "Pairing in progress",
+        "description": "Searching for your TV. The pairing window is open for 60 seconds."
+      },
+      "not_paired": {
+        "title": "Pairing timed out",
+        "description": "Your TV did not pair within 60 seconds. The bridge will start without a paired TV — you can pair later from the integration's Configure menu."
+      }
+    },
+    "progress": {
+      "waiting_for_tv": "Waiting for your TV to pair…"
+    },
+    "abort": {
+      "already_configured": "Hue Entertainment Bridge is already configured.",
+      "port_in_use": "Port 80 is already in use on the Home Assistant host, so the bridge cannot start. See the README for port-conflict options, then try again."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Hue Entertainment Bridge",
+        "description": "Update the entertainment area lights or pair your TV.",
+        "data": {
+          "lights": "Lights",
+          "pair_now": "Pair TV now",
+          "bind_ip": "Bind IP address"
+        },
+        "data_description": {
+          "pair_now": "Opens a 60-second pairing window after saving.",
+          "bind_ip": "Leave blank to use the auto-detected HA host IP. Set to a secondary IP address (e.g. a macvlan interface) to bind the bridge's HTTP and DTLS servers to that address only, freeing port 80 on the primary IP for Traefik or Nginx."
+        }
+      },
+      "pairing": {
+        "title": "Pair your TV",
+        "description": "Open Ambilight Sync settings on your TV now. The pairing window is open for 60 seconds."
+      },
+      "not_paired": {
+        "title": "Pairing timed out",
+        "description": "Your TV did not pair within 60 seconds. You can try again from Configure."
+      }
+    },
+    "progress": {
+      "waiting_for_tv": "Waiting for your TV to pair…"
+    },
+    "error": {
+      "invalid_ip": "Not a valid IPv4 address"
+    }
+  }
+}
