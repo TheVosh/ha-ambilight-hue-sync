@@ -8,6 +8,7 @@ import secrets
 import time
 import uuid
 from collections.abc import Awaitable, Callable
+from typing import Any
 
 from aiohttp import web
 
@@ -48,6 +49,7 @@ class HueAPIServer:
         light_entities: list[str],
         user_store: UserStore | None = None,
         bind_ip: str | None = None,
+        http_host: Any = None,
     ) -> None:
         self._bridge_id = bridge_id
         self._mac = mac
@@ -56,6 +58,9 @@ class HueAPIServer:
         self._channel_count = channel_count
         self._light_entities = light_entities
         self._bind_ip = bind_ip
+        # ha_http.HueHttpHost: when set, requests arrive through Home Assistant's
+        # own HTTP server instead of a standalone aiohttp server on http_port.
+        self._http_host = http_host
 
         self._user_store = user_store if user_store is not None else UserStore()
 
@@ -116,8 +121,22 @@ class HueAPIServer:
         """Get the PSK (clientkey) for a username."""
         return self._user_store.get_psk(username)
 
+    @property
+    def http_port(self) -> int:
+        """Port the Hue API is reachable on."""
+        return self._http_port
+
+    @property
+    def uses_ha_http(self) -> bool:
+        """True when served through Home Assistant's HTTP server."""
+        return self._http_host is not None
+
     async def async_start(self) -> None:
-        """Start the HTTP server."""
+        """Start serving: attach to HA's HTTP server, or bind a standalone one."""
+        if self._http_host is not None:
+            self._http_host.attach(self)
+            _LOGGER.info("Hue API served by Home Assistant's HTTP server on :%d", self._http_port)
+            return
         app = web.Application(middlewares=[_request_logger])
         self._register_routes(app)
 
@@ -129,38 +148,54 @@ class HueAPIServer:
         _LOGGER.info("Hue API HTTP server on %s:%d", bind_addr, self._http_port)
 
     async def async_stop(self) -> None:
-        """Stop the HTTP server."""
+        """Stop serving."""
+        if self._http_host is not None:
+            self._http_host.detach(self)
         if self._http_runner:
             await self._http_runner.cleanup()
+            self._http_runner = None
         _LOGGER.info("Hue API server stopped")
 
-    def _register_routes(self, app: web.Application) -> None:
-        """Register all API routes."""
+    # (method, path, handler attribute) — shared by the standalone aiohttp app and
+    # the views registered on Home Assistant's own HTTP server (see ha_http.py).
+    ROUTES: tuple[tuple[str, str, str], ...] = (
         # UPnP description
-        app.router.add_get("/description.xml", self._handle_description_xml)
-
+        ("GET", "/description.xml", "_handle_description_xml"),
         # Unauthenticated config (two paths the TV may try)
-        app.router.add_get("/api/nouser/config", self._handle_config)
-        app.router.add_get("/api/config", self._handle_config)
-        app.router.add_post("/api", self._handle_create_user)
-        app.router.add_get("/api/{username}", self._handle_full_datastore)
-        app.router.add_get("/api/{username}/config", self._handle_config_auth)
-        app.router.add_get("/api/{username}/capabilities", self._handle_capabilities)
+        ("GET", "/api/nouser/config", "_handle_config"),
+        ("GET", "/api/config", "_handle_config"),
+        ("POST", "/api", "_handle_create_user"),
+        ("GET", "/api/{username}", "_handle_full_datastore"),
+        ("GET", "/api/{username}/config", "_handle_config_auth"),
+        ("GET", "/api/{username}/capabilities", "_handle_capabilities"),
         # V1 lights and groups (TV reads these to find colour bulbs + entertainment areas)
-        app.router.add_get("/api/{username}/lights", self._handle_v1_lights)
-        app.router.add_get("/api/{username}/lights/{light_id}", self._handle_v1_light_by_id)
-        app.router.add_put("/api/{username}/lights/{light_id}/state", self._handle_v1_light_state)
-        app.router.add_get("/api/{username}/groups", self._handle_v1_groups)
-        app.router.add_get("/api/{username}/groups/{group_id}", self._handle_v1_group_by_id)
-        app.router.add_put("/api/{username}/groups/{group_id}", self._handle_v1_group_put)
-        app.router.add_put("/api/{username}/groups/{group_id}/stream", self._handle_v1_stream)
+        ("GET", "/api/{username}/lights", "_handle_v1_lights"),
+        ("GET", "/api/{username}/lights/{light_id}", "_handle_v1_light_by_id"),
+        ("PUT", "/api/{username}/lights/{light_id}/state", "_handle_v1_light_state"),
+        ("GET", "/api/{username}/groups", "_handle_v1_groups"),
+        ("GET", "/api/{username}/groups/{group_id}", "_handle_v1_group_by_id"),
+        ("PUT", "/api/{username}/groups/{group_id}", "_handle_v1_group_put"),
+        ("PUT", "/api/{username}/groups/{group_id}/stream", "_handle_v1_stream"),
         # Catch-alls for unimplemented v1 resources (avoids 404s / 405s)
-        app.router.add_get("/api/{username}/{resource}", self._handle_v1_catchall)
-        app.router.add_get("/api/{username}/{resource}/{id}", self._handle_v1_catchall)
-        app.router.add_put("/api/{username}/{resource}/{id}", self._handle_v1_put_catchall)
-        app.router.add_put("/api/{username}/{resource}/{id}/{param}", self._handle_v1_put_catchall)
-        app.router.add_post("/api/{username}/{resource}", self._handle_v1_post_catchall)
-        app.router.add_delete("/api/{username}/{resource}/{id}", self._handle_v1_delete_catchall)
+        ("GET", "/api/{username}/{resource}", "_handle_v1_catchall"),
+        ("GET", "/api/{username}/{resource}/{id}", "_handle_v1_catchall"),
+        ("PUT", "/api/{username}/{resource}/{id}", "_handle_v1_put_catchall"),
+        ("PUT", "/api/{username}/{resource}/{id}/{param}", "_handle_v1_put_catchall"),
+        ("POST", "/api/{username}/{resource}", "_handle_v1_post_catchall"),
+        ("DELETE", "/api/{username}/{resource}/{id}", "_handle_v1_delete_catchall"),
+    )
+
+    def _register_routes(self, app: web.Application) -> None:
+        """Register all API routes on a standalone aiohttp app."""
+        for method, path, attr in self.ROUTES:
+            app.router.add_route(method, path, getattr(self, attr))
+
+    async def handle(self, attr: str, request: web.Request) -> web.Response:
+        """Dispatch a request to a handler by attribute name (used by ha_http views)."""
+        handler: Callable[[web.Request], Awaitable[web.Response]] = getattr(self, attr)
+        resp = await handler(request)
+        _LOGGER.debug("%s %s -> %d", request.method, request.path, resp.status)
+        return resp
 
     # ---------------------------------------------------------------------------
     # Data builders

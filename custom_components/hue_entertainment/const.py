@@ -8,6 +8,13 @@ CONF_API_PORT = "api_port"
 CONF_BRIDGE_ID = "bridge_id"
 CONF_PAIR_NOW = "pair_now"
 CONF_BIND_IP = "bind_ip"
+CONF_HTTP_MODE = "http_mode"
+
+# Where the Hue REST API is served from
+HTTP_MODE_AUTO = "auto"  # HA's own server if it listens on :80 without TLS, else standalone
+HTTP_MODE_STANDALONE = "standalone"  # own aiohttp server on DEFAULT_API_PORT
+HTTP_MODE_HOMEASSISTANT = "homeassistant"  # views on hass.http (whatever port HA uses)
+DEFAULT_HTTP_MODE = HTTP_MODE_AUTO
 
 DEFAULT_ENTERTAINMENT_PORT = 2100
 DEFAULT_API_PORT = 80

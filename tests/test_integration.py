@@ -249,6 +249,107 @@ async def test_options_flow_validates_bind_ip(hass: HomeAssistant) -> None:
     )
     assert result["type"] is FlowResultType.CREATE_ENTRY
     await hass.async_block_till_done()
-    assert entry.options == {CONF_LIGHTS: LIGHTS, CONF_BIND_IP: "127.0.0.1"}
+    assert dict(entry.options) == {
+        CONF_LIGHTS: LIGHTS,
+        CONF_BIND_IP: "127.0.0.1",
+        CONF_HTTP_MODE: "auto",
+    }
     assert entry.state is ConfigEntryState.LOADED
+    assert await hass.config_entries.async_unload(entry.entry_id)
+
+
+# ---------------------------------------------------------------------------
+# Hue API on Home Assistant's own HTTP server
+# ---------------------------------------------------------------------------
+
+from homeassistant.setup import async_setup_component  # noqa: E402
+
+from custom_components.hue_entertainment.const import (  # noqa: E402
+    CONF_HTTP_MODE,
+    HTTP_MODE_HOMEASSISTANT,
+)
+
+
+async def test_ha_http_mode_serves_hue_api_on_hass_http(hass, hass_client_no_auth, hass_client):
+    assert await async_setup_component(hass, "api", {})  # HA owns /api/config
+    entry = await _setup(hass, _entry(**{CONF_HTTP_MODE: HTTP_MODE_HOMEASSISTANT}))
+    data = entry.runtime_data
+    assert data.api_server.uses_ha_http
+    assert data.api_server.http_port == hass.http.server_port
+
+    anon = await hass_client_no_auth()
+    resp = await anon.get("/description.xml")
+    assert resp.status == 200 and BRIDGE_ID[-6:].lower() in (await resp.text()).lower()
+    resp = await anon.get("/api/nouser/config")
+    assert resp.status == 200 and (await resp.json())["bridgeid"] == BRIDGE_ID
+    # Unauthenticated /api/config → Hue config (shim); authenticated → HA's own
+    resp = await anon.get("/api/config")
+    assert resp.status == 200 and (await resp.json())["bridgeid"] == BRIDGE_ID
+    authed = await hass_client()
+    resp = await authed.get("/api/config")
+    assert resp.status == 200 and "components" in await resp.json()
+    # HA's own API still works alongside
+    resp = await authed.get("/api/")
+    assert resp.status == 200
+
+    # Pairing through HA's server
+    data.api_server.set_link_button(True)
+    resp = await anon.post("/api", json={"devicetype": "test#tv", "generateclientkey": True})
+    body = await resp.json()
+    assert resp.status == 200 and "username" in body[0]["success"]
+    username = body[0]["success"]["username"]
+    resp = await anon.get(f"/api/{username}/lights/1")
+    assert resp.status == 200 and (await resp.json())["name"] == LIGHTS[0]
+    assert data.user_store.get_psk(username) is not None
+
+    assert await hass.config_entries.async_unload(entry.entry_id)
+    await hass.async_block_till_done()
+    resp = await anon.get("/api/nouser/config")
+    assert resp.status == 503
+    resp = await authed.get("/api/config")  # HA's handler untouched after detach
+    assert resp.status == 200 and "components" in await resp.json()
+
+
+async def _ha_on_port_80(hass) -> None:
+    """Pretend HA serves plain HTTP on :80 (nothing is bound in the harness)."""
+    assert await async_setup_component(hass, "http", {})
+    hass.http.server_port = 80
+
+
+async def test_auto_mode_uses_hass_http_when_ha_listens_on_80(hass):
+    await _ha_on_port_80(hass)
+    entry = await _setup(hass, _entry())
+    assert entry.runtime_data.api_server.uses_ha_http
+    assert entry.runtime_data.api_server.http_port == 80
+    assert await hass.config_entries.async_unload(entry.entry_id)
+
+
+async def test_auto_mode_stays_standalone_on_8123(hass):
+    entry = await _setup(hass, _entry())
+    assert not entry.runtime_data.api_server.uses_ha_http
+    assert await hass.config_entries.async_unload(entry.entry_id)
+
+
+async def test_config_flow_pairs_through_hass_http(hass, hass_client_no_auth):
+    await _ha_on_port_80(hass)
+    result = await hass.config_entries.flow.async_init(DOMAIN, context={"source": "user"})
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {CONF_LIGHTS: LIGHTS}
+    )
+    result = await hass.config_entries.flow.async_configure(result["flow_id"], {})
+    assert result["type"] is FlowResultType.SHOW_PROGRESS
+
+    anon = await hass_client_no_auth()
+    resp = await anon.post("/api", json={"devicetype": "test#tv", "generateclientkey": True})
+    assert resp.status == 200 and "username" in (await resp.json())[0]["success"]
+    await asyncio.sleep(0.6)
+    await hass.async_block_till_done()
+    result = await hass.config_entries.flow.async_configure(result["flow_id"])
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    await hass.async_block_till_done()
+    entry = hass.config_entries.async_entries(DOMAIN)[0]
+    assert entry.runtime_data.api_server.uses_ha_http
+    # The entry's server took over the shared views from the pairing server
+    resp = await anon.get("/api/nouser/config")
+    assert resp.status == 200
     assert await hass.config_entries.async_unload(entry.entry_id)

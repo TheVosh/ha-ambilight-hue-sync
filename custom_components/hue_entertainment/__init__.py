@@ -27,9 +27,11 @@ from .const import (
     CONF_BIND_IP,
     CONF_BRIDGE_ID,
     CONF_ENTERTAINMENT_PORT,
+    CONF_HTTP_MODE,
     CONF_LIGHTS,
     DEFAULT_API_PORT,
     DEFAULT_ENTERTAINMENT_PORT,
+    DEFAULT_HTTP_MODE,
     DOMAIN,
     FRAME_TIMEOUT,
     FRAME_WATCHDOG_INTERVAL,
@@ -38,6 +40,7 @@ from .const import (
 from .discovery import HueBridgeDiscovery
 from .dtls_psk import DTLSPSKServer
 from .entertainment import EntertainmentEngine, FrameMailbox, LightMapping
+from .ha_http import async_get_http_host, resolve_use_ha_http
 from .hue_api import HueAPIServer
 from .user_store import UserStore
 
@@ -82,10 +85,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: HueEntertainmentConfigEn
         CONF_ENTERTAINMENT_PORT,
         entry.data.get(CONF_ENTERTAINMENT_PORT, DEFAULT_ENTERTAINMENT_PORT),
     )
-    http_port = entry.options.get(
-        CONF_API_PORT,
-        entry.data.get(CONF_API_PORT, DEFAULT_API_PORT),
-    )
+    http_mode = entry.options.get(CONF_HTTP_MODE, entry.data.get(CONF_HTTP_MODE, DEFAULT_HTTP_MODE))
+    use_ha_http = resolve_use_ha_http(hass, http_mode)
+    if use_ha_http:
+        http_port = hass.http.server_port
+        http_host = async_get_http_host(hass)
+    else:
+        http_port = entry.options.get(
+            CONF_API_PORT, entry.data.get(CONF_API_PORT, DEFAULT_API_PORT)
+        )
+        http_host = None
 
     # Build light channel mappings — v1 uses 1-indexed light IDs, v2 uses 0-indexed
     # channel IDs.  Map both so either protocol version works.
@@ -119,6 +128,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: HueEntertainmentConfigEn
         light_entities=light_entities,
         user_store=user_store,
         bind_ip=bind_ip,
+        http_host=http_host,
     )
 
     # DTLS server — always listening; TV may probe before the REST "start" action
@@ -223,8 +233,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: HueEntertainmentConfigEn
             ) from err
         await discovery.async_start()
         _LOGGER.info(
-            "Hue Entertainment Bridge started: bridge_id=%s, http=:%d, dtls=:%d, lights=%d, users=%d",
+            "Hue Entertainment Bridge started: bridge_id=%s, http=%s:%d, dtls=:%d, lights=%d, users=%d",
             bridge_id,
+            "hass" if use_ha_http else "standalone",
             http_port,
             ent_port,
             len(light_entities),

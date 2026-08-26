@@ -15,19 +15,28 @@ from homeassistant.helpers.selector import (
     BooleanSelector,
     EntitySelector,
     EntitySelectorConfig,
+    SelectSelector,
+    SelectSelectorConfig,
+    SelectSelectorMode,
     TextSelector,
 )
 
 from .const import (
     CONF_BIND_IP,
     CONF_BRIDGE_ID,
+    CONF_HTTP_MODE,
     CONF_LIGHTS,
     CONF_PAIR_NOW,
     DEFAULT_API_PORT,
+    DEFAULT_HTTP_MODE,
     DOMAIN,
+    HTTP_MODE_AUTO,
+    HTTP_MODE_HOMEASSISTANT,
+    HTTP_MODE_STANDALONE,
     LINK_BUTTON_TIMEOUT,
 )
 from .discovery import HueBridgeDiscovery
+from .ha_http import async_get_http_host, resolve_use_ha_http
 from .hue_api import HueAPIServer
 from .user_store import UserStore
 
@@ -131,15 +140,18 @@ class HueEntertainmentConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):  # t
         """Step 3: start a temporary bridge and wait for the TV to pair."""
         if self._pairing_task is None:
             host_ip = await async_get_source_ip(self.hass)
+            use_ha_http = resolve_use_ha_http(self.hass, DEFAULT_HTTP_MODE)
+            http_port = self.hass.http.server_port if use_ha_http else DEFAULT_API_PORT
             self._temp_user_store = UserStore()
             self._temp_api = HueAPIServer(
                 bridge_id=self._bridge_id,
                 mac=mac_from_bridge_id(self._bridge_id),
                 host_ip=host_ip,
-                http_port=DEFAULT_API_PORT,
+                http_port=http_port,
                 channel_count=len(self._lights),
                 light_entities=self._lights,
                 user_store=self._temp_user_store,
+                http_host=async_get_http_host(self.hass) if use_ha_http else None,
             )
             try:
                 await self._temp_api.async_start()
@@ -155,7 +167,7 @@ class HueEntertainmentConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):  # t
             self._temp_discovery = HueBridgeDiscovery(
                 bridge_id=self._bridge_id,
                 host_ip=host_ip,
-                port=DEFAULT_API_PORT,
+                port=http_port,
                 async_zeroconf=async_zc,
             )
             await self._temp_discovery.async_start()
@@ -211,6 +223,7 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
         super().__init__()
         self._lights: list[str] = []
         self._bind_ip: str | None = None
+        self._http_mode: str = DEFAULT_HTTP_MODE
         self._paired = False
         self._pairing_task: asyncio.Task | None = None
 
@@ -219,6 +232,7 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
         errors: dict[str, str] = {}
         if user_input is not None:
             self._lights = user_input[CONF_LIGHTS]
+            self._http_mode = user_input.get(CONF_HTTP_MODE, DEFAULT_HTTP_MODE)
             raw_ip = (user_input.get(CONF_BIND_IP) or "").strip()
             if raw_ip and not _is_ipv4(raw_ip):
                 errors[CONF_BIND_IP] = "invalid_ip"
@@ -226,9 +240,7 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                 self._bind_ip = raw_ip or None
                 if user_input.get(CONF_PAIR_NOW, False):
                     return await self.async_step_pairing()
-                return self.async_create_entry(
-                    title="", data={CONF_LIGHTS: self._lights, CONF_BIND_IP: self._bind_ip}
-                )
+                return self.async_create_entry(title="", data=self._options())
 
         current_lights = self.config_entry.options.get(
             CONF_LIGHTS, self.config_entry.data.get(CONF_LIGHTS, [])
@@ -239,10 +251,14 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
             )
             or ""
         )
+        current_mode = self.config_entry.options.get(
+            CONF_HTTP_MODE, self.config_entry.data.get(CONF_HTTP_MODE, DEFAULT_HTTP_MODE)
+        )
         if user_input is not None:
             # Re-show what the user typed
             current_lights = user_input[CONF_LIGHTS]
             current_bind_ip = user_input.get(CONF_BIND_IP, "")
+            current_mode = user_input.get(CONF_HTTP_MODE, current_mode)
         return self.async_show_form(
             step_id="init",
             data_schema=vol.Schema(
@@ -254,10 +270,24 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                     # Plain selector: validators inside the schema can't be
                     # serialised for the frontend (voluptuous_serialize)
                     vol.Optional(CONF_BIND_IP, default=current_bind_ip): TextSelector(),
+                    vol.Optional(CONF_HTTP_MODE, default=current_mode): SelectSelector(
+                        SelectSelectorConfig(
+                            options=[HTTP_MODE_AUTO, HTTP_MODE_STANDALONE, HTTP_MODE_HOMEASSISTANT],
+                            translation_key=CONF_HTTP_MODE,
+                            mode=SelectSelectorMode.DROPDOWN,
+                        )
+                    ),
                 }
             ),
             errors=errors,
         )
+
+    def _options(self) -> dict:
+        return {
+            CONF_LIGHTS: self._lights,
+            CONF_BIND_IP: self._bind_ip,
+            CONF_HTTP_MODE: self._http_mode,
+        }
 
     async def async_step_pairing(self, user_input=None):
         """Open the link button and wait for the TV to pair."""
@@ -289,14 +319,10 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
 
     async def async_step_paired(self, user_input=None):
         """TV paired — save options immediately."""
-        return self.async_create_entry(
-            title="", data={CONF_LIGHTS: self._lights, CONF_BIND_IP: self._bind_ip}
-        )
+        return self.async_create_entry(title="", data=self._options())
 
     async def async_step_not_paired(self, user_input=None):
         """Pairing timed out — acknowledge then save options."""
         if user_input is not None:
-            return self.async_create_entry(
-                title="", data={CONF_LIGHTS: self._lights, CONF_BIND_IP: self._bind_ip}
-            )
+            return self.async_create_entry(title="", data=self._options())
         return self.async_show_form(step_id="not_paired", data_schema=vol.Schema({}))

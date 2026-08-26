@@ -1,9 +1,13 @@
 {
+  "after_dependencies": [
+    "api"
+  ],
   "codeowners": [
     "@83noit"
   ],
   "config_flow": true,
   "dependencies": [
+    "http",
     "network",
     "zeroconf"
   ],

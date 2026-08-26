@@ -44,11 +44,13 @@
         "data": {
           "lights": "Lumières",
           "pair_now": "Associer le téléviseur maintenant",
-          "bind_ip": "Lier à l'adresse IP"
+          "bind_ip": "Lier à l'adresse IP",
+          "http_mode": "Serveur API Hue"
         },
         "data_description": {
           "pair_now": "Ouvre une fenêtre d'association de 60 secondes après l'enregistrement.",
-          "bind_ip": "Laissez vide pour utiliser l'adresse IP de l'hôte HA détectée automatiquement. Renseignez une adresse IP secondaire (ex. une interface macvlan) pour que les serveurs HTTP et DTLS du pont écoutent uniquement sur cette adresse, libérant ainsi le port 80 sur l'IP principale pour Traefik ou Nginx."
+          "bind_ip": "Laissez vide pour utiliser l'adresse IP de l'hôte HA détectée automatiquement. Renseignez une adresse IP secondaire (ex. une interface macvlan) pour que les serveurs HTTP et DTLS du pont écoutent uniquement sur cette adresse, libérant ainsi le port 80 sur l'IP principale pour Traefik ou Nginx.",
+          "http_mode": "Où l'API REST Hue est servie. Automatique : utilise le serveur web de Home Assistant lorsqu'il écoute sur le port 80 sans HTTPS (Paramètres → Système → Réseau, HA 2026.8+), sinon un serveur autonome sur le port 80. Ne changer que si le choix automatique est incorrect."
         }
       },
       "pairing": {
@@ -65,6 +67,15 @@
     },
     "error": {
       "invalid_ip": "Adresse IPv4 invalide"
+    }
+  },
+  "selector": {
+    "http_mode": {
+      "options": {
+        "auto": "Automatique (recommandé)",
+        "standalone": "Serveur autonome sur le port 80",
+        "homeassistant": "Serveur web de Home Assistant"
+      }
     }
   }
 }

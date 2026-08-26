@@ -82,6 +82,22 @@ Open **Configure** on the integration card to:
 
 ## Port conflicts
 
+### Home Assistant on port 80 (HA 2026.8+, recommended)
+
+Since Home Assistant 2026.8 the frontend can listen on port 80 itself (Settings → System →
+Network → *HTTP server port*). When it does — plain HTTP, no certificate — this integration
+detects it and serves the Hue API **through Home Assistant's own web server** instead of
+starting a second one, so there is no port conflict at all. Nothing to configure; the
+*Hue API server* option (Configure → Automatic / Standalone / Home Assistant) exists only to
+override the detection. The DTLS stream still uses UDP port 2100 directly.
+
+One HA endpoint overlaps with the Hue API: `GET /api/config`. Unauthenticated requests
+(what a Hue client sends) receive the Hue bridge config; requests carrying a Home Assistant
+token reach Home Assistant's own handler as before.
+
+If Home Assistant stays on 8123, or serves HTTPS on 443, the integration runs its own server
+on port 80 and the options below apply.
+
 The TV hardcodes port 80 for HTTP and port 2100 for DTLS. Port 80 cannot be changed — this is a Philips Hue protocol requirement, not a limitation of this integration. If something else (Traefik, Nginx, Pi-hole) already occupies port 80 on your HA host, you have two options.
 
 ### Option 1 — Secondary IP address (recommended)
