@@ -401,6 +401,17 @@ class TestScheduleUpdateXY:
         # Mapping state stores raw 16-bit brightness
         assert engine._mappings[0].last_b == 65535
 
+    def test_reset_stats_forgets_last_sent_values(self):
+        """Session end must clear tolerance state so the next session's first frame is sent."""
+        engine, _ = self._engine_with_last(17715, 18190, 6939)
+        m = engine._mappings[0]
+        m.last_sent = 123.0
+        engine.reset_stats()
+        assert (m.last_r, m.last_g, m.last_b) == (-1, -1, -1)
+        assert m.last_sent == 0.0
+        engine._schedule_update(ChannelColor(0, 17715, 18190, 6939), COLOR_SPACE_XY)
+        assert m.dirty
+
     def test_fresh_mapping_always_triggers(self):
         engine, hass = _make_engine(channels=1)
         # last_r/g/b default to -1 → always a big change

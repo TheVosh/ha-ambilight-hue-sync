@@ -226,10 +226,21 @@ class EntertainmentEngine:
         self._window_commands = 0
         self._fps_time = time.monotonic()
         self._first_frame_logged = False
-        # Clear dirty flags
+        self._reset_mappings()
+
+    def _reset_mappings(self) -> None:
+        """Forget per-light send state so the next session starts from scratch.
+
+        Without this, the first frames of a new session are suppressed by the
+        tolerance check whenever they resemble the last frames of the previous
+        one (e.g. the TV's home screen), and the lights stay in their restored
+        state until the picture changes enough.
+        """
         for m in self._mappings.values():
             m.dirty = False
             m.pending_data = None
+            m.last_r = m.last_g = m.last_b = -1
+            m.last_sent = 0.0
 
     async def async_snapshot_lights(self) -> None:
         """Snapshot current light states so they can be restored after entertainment."""
@@ -239,6 +250,7 @@ class EntertainmentEngine:
             if state is not None:
                 states.append(state)
         self._saved_states = states
+        self._reset_mappings()
         self._active = True
         self.last_frame_time = time.monotonic()
         # Start the adaptive drain loop

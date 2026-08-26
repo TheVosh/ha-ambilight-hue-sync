@@ -15,6 +15,7 @@ from typing import Any
 
 from ._openssl import (
     BIO_NOCLOSE,
+    SSL_ERROR_SYSCALL,
     SSL_ERROR_WANT_READ,
     SSL_ERROR_ZERO_RETURN,
     ffi,
@@ -224,16 +225,16 @@ class DTLSPSKServer:
             raise RuntimeError("BIO_ADDR_new failed")
 
         try:
-            _LOGGER.debug("Waiting for DTLS ClientHello...")
             ret = libssl.DTLSv1_listen(ssl, client_addr)
             if ret <= 0:
                 err = libssl.SSL_get_error(ssl, ret)
                 if not self._running:
                     return
                 if ret == 0 or err == SSL_ERROR_WANT_READ:
-                    # Non-fatal: receive timeout, stale packet or incomplete
-                    # ClientHello — caller retries
-                    if err != SSL_ERROR_WANT_READ:
+                    # Non-fatal: receive timeout (SYSCALL/WANT_READ with no
+                    # error queued), stale packet or incomplete ClientHello —
+                    # caller retries
+                    if err not in (SSL_ERROR_WANT_READ, SSL_ERROR_SYSCALL):
                         _LOGGER.debug("DTLSv1_listen: non-fatal (ret=0, err=%d), retrying", err)
                     return
                 raise RuntimeError(
