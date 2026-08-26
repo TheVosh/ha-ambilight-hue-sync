@@ -12,7 +12,7 @@ flowchart TD
 
     subgraph HA["Home Assistant"]
         subgraph Integration["Hue Entertainment Bridge"]
-            API["Hue API\n:80 HTTP"]
+            API["Hue API\n:80 HTTP — standalone,\nor on HA's own server"]
             DTLS["DTLS Server\n:2100 UDP"]
             Engine["Entertainment Engine\nframe parser · throttle · coalesce"]
         end
@@ -31,10 +31,12 @@ flowchart TD
 The integration:
 
 1. Advertises a Hue Bridge via mDNS (`_hue._tcp.local`)
-2. Serves the Hue v1 REST API for pairing and configuration
+2. Serves the Hue v1 REST API for pairing and configuration — on its own port-80 server, or
+   through Home Assistant's web server when HA itself listens on port 80 (HA 2026.8+)
 3. Accepts DTLS-PSK connections for real-time colour streaming
 4. Parses HueStream frames (v1 XY and RGB, v2 RGB)
 5. Dispatches colour updates to HA lights via an adaptive drain loop that matches Zigbee throughput
+6. Also follows the TV's "classic" per-light commands (no streaming), at the same Zigbee-safe pace
 
 ## Features
 
@@ -43,13 +45,17 @@ The integration:
 - **Dynamic transitions** — fade duration automatically matches the update interval for smooth colour changes
 - **State snapshot/restore** — lights return to their previous state when entertainment mode ends
 - **Watchdog** — auto-stops if the TV disconnects or stops sending frames
+- **Classic mode fallback** — if the TV drives lights over plain REST instead of streaming, they still follow
+- **No port juggling on HA 2026.8+** — when Home Assistant listens on port 80 the Hue API rides on HA's own web server
+- **Resilient** — options apply without a restart, unavailable lights are skipped, bind failures are reported cleanly
+- **Diagnostics** — downloadable diagnostics (credentials redacted) and a bridge device grouping the entities
 
 ## Requirements
 
-- Home Assistant 2024.2+
+- Home Assistant 2024.11+
 - [ZHA](https://www.home-assistant.io/integrations/zha/) with colour-capable Zigbee lights
 - A Philips TV with Ambilight (or any device that speaks the Hue Entertainment API)
-- Port 80 (TCP) and port 2100 (UDP) reachable on the HA host from the TV
+- Port 80 (TCP) and port 2100 (UDP) reachable on the HA host from the TV — the TV hardcodes both
 
 ## Installation
 
@@ -79,6 +85,11 @@ Open **Configure** on the integration card to:
 - **Change lights** — update which entities are in the entertainment area
 - **Pair TV** — open a new 60-second pairing window
 - **Bind IP address** — bind the bridge to a specific IP address (see [Port conflicts](#port-conflicts) below)
+- **Hue API server** — *Automatic* (default), *Standalone server on port 80*, or *Home Assistant's
+  web server*; see [Port conflicts](#port-conflicts) for when each applies
+
+Changes apply immediately — no restart needed. **Download diagnostics** on the same card gives a
+redacted snapshot (paired clients, engine counters, options) to attach to bug reports.
 
 ## Port conflicts
 
@@ -150,15 +161,23 @@ With 4 lights on a typical Zigbee coordinator, expect ~5–6 commands/second (~1
 ## Tested with
 
 - Philips 55OLED806/12 (Ambilight, v1 XY frames at 25 fps)
+- Home Assistant OS 2026.8 with the frontend on port 80 (Hue API on HA's server) and on 8123 (standalone)
 - SLZB-06Mg24 Zigbee coordinator (TCP, via ZHA)
 - Various Zigbee colour bulbs
 
 ## Troubleshooting
 
 **TV doesn't find the bridge**
-- Check port 80 is free on the HA host: `ss -tlnp | grep :80`
+- If the integration card says *Failed to set up* / *Retrying*, port 80 is taken on the HA host —
+  see [Port conflicts](#port-conflicts). `curl http://<HA_IP>/api/nouser/config` must return the bridge JSON.
 - Verify mDNS works across VLANs if the TV is on a separate network segment
 - Check HA logs for mDNS registration errors
+
+**TV says the bulbs are connected but they barely follow, or lag a lot**
+- The TV has fallen into "classic" mode (per-light REST commands, ~4 updates/s shared by all bulbs,
+  no DTLS stream). This happens when the bridge disappears while the TV is on — e.g. an HA restart.
+  Toggling Ambilight+hue does not fix it; **restart the TV** and it will stream again (allow 2–3
+  minutes for it to rediscover the bridge).
 
 **Lights don't change colour**
 - Confirm the selected lights are ZHA colour-capable entities (`color_mode: xy` or `hs`)

@@ -375,7 +375,32 @@ def test_is_lan_request(remote, lan):
 
     from custom_components.hue_entertainment.ha_http import is_lan_request  # noqa: PLC0415
 
-    assert is_lan_request(Mock(remote=remote)) is lan
+    assert is_lan_request(Mock(remote=remote, headers={})) is lan
+
+
+def test_proxied_requests_are_never_lan():
+    from unittest.mock import Mock  # noqa: PLC0415
+
+    from custom_components.hue_entertainment.ha_http import is_lan_request  # noqa: PLC0415
+
+    assert not is_lan_request(Mock(remote="10.0.0.5", headers={"X-Forwarded-For": "10.0.0.9"}))
+
+
+async def test_hosted_wildcards_do_not_capture_other_api_paths(hass, hass_client_no_auth):
+    """/api/webhook/<id> etc. must not resolve to the Hue catch-alls."""
+    assert await async_setup_component(hass, "api", {})
+    entry = await _setup(hass, _entry(**{CONF_HTTP_MODE: HTTP_MODE_HOMEASSISTANT}))
+    anon = await hass_client_no_auth()
+    resp = await anon.get("/api/webhook/abc")  # no webhook view registered → plain 404, not {}
+    assert resp.status == 404 and await resp.text() != "{}"
+    resp = await anon.post("/api/webhook/abc", json={})
+    assert resp.status == 404
+    resp = await anon.get("/api/nouser/config")
+    assert resp.status == 200 and "whitelist" not in await resp.json()
+    # A real (32-hex) but unknown username still gets the Hue-style 401
+    resp = await anon.get("/api/" + "0" * 32 + "/lights")
+    assert resp.status == 200 and (await resp.json())[0]["error"]["type"] == 1
+    assert await hass.config_entries.async_unload(entry.entry_id)
 
 
 async def test_hue_routes_hidden_from_non_lan_clients(hass, hass_client_no_auth, hass_client):

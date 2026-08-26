@@ -735,7 +735,7 @@ class TestFrameMailbox:
         box.put(b"two")
         box.put(b"three")
         assert loop.call_soon_threadsafe.call_count == 1
-        assert box.dropped == 2
+        assert box.coalesced == 2
         # Simulate the loop running the scheduled callback
         loop.call_soon_threadsafe.call_args[0][0]()
         assert handled == [b"three"]
@@ -809,6 +809,26 @@ class TestHandleLightCommand:
             "_service": "turn_off",
             "entity_id": "light.test_1",
         }
+
+    def test_colour_after_queued_off_is_ignored_but_on_supersedes(self):
+        engine, _ = _make_engine(channels=2)
+        engine.handle_light_command(1, {"on": False})
+        engine.handle_light_command(1, {"xy": [0.3, 0.4]})  # TV splits fields into PUTs
+        assert engine._mappings[1].pending_data["_service"] == "turn_off"
+        assert "xy_color" not in engine._mappings[1].pending_data
+        engine.handle_light_command(1, {"on": True, "bri": 254})
+        assert engine._mappings[1].pending_data == {
+            "_service": "turn_on",
+            "brightness": 255,
+            "entity_id": "light.test_1",
+        }
+
+    def test_classic_put_replaces_a_stream_mode_slot(self):
+        engine, _ = _make_engine(channels=1)
+        engine._schedule_update(ChannelColor(0, 30000, 30000, 60000), COLOR_SPACE_XY)
+        engine.handle_light_command(0, {"bri": 254})
+        assert "xy_color" not in engine._mappings[0].pending_data
+        assert engine._mappings[0].explicit_transition
 
     def test_unknown_light_ignored(self):
         engine, hass = _make_engine(channels=1)

@@ -187,18 +187,22 @@ class FrameMailbox:
         self._lock = threading.Lock()
         self._latest: bytes | None = None
         self._scheduled = False
-        self.dropped = 0
+        self.coalesced = 0  # frames superseded before the loop got to them
 
     def put(self, frame: bytes) -> None:
         """Thread-safe: store the freshest frame and wake the loop once."""
         with self._lock:
             if self._latest is not None:
-                self.dropped += 1
+                self.coalesced += 1
             self._latest = frame
             if self._scheduled:
                 return
             self._scheduled = True
-        self._loop.call_soon_threadsafe(self._deliver)
+        try:
+            self._loop.call_soon_threadsafe(self._deliver)
+        except RuntimeError:  # event loop closed (HA shutting down)
+            with self._lock:
+                self._scheduled = False
 
     def _deliver(self) -> None:
         with self._lock:
@@ -235,6 +239,7 @@ class EntertainmentEngine:
         self._active: bool = False
         self._saved_states: list[State] | None = None
         self._drain_task: asyncio.Task | None = None
+        self._wake = asyncio.Event()  # set whenever a slot becomes dirty
 
     def _log_fps(self, now: float) -> None:
         """Log FPS stats if the 5-second window has elapsed, then reset counters."""
@@ -405,6 +410,7 @@ class EntertainmentEngine:
         idle_since: float | None = None
         try:
             while True:
+                self._wake.clear()
                 sent_any = False
                 for mapping in mappings:
                     if not mapping.dirty:
@@ -449,8 +455,11 @@ class EntertainmentEngine:
                         idle_since = now
                     elif now - idle_since > CLASSIC_DRAIN_IDLE:
                         return
-                # Nothing dirty — yield briefly to let new frames arrive
-                await asyncio.sleep(0.005)
+                # Nothing dirty — sleep until new data is slotted (or the idle check is due)
+                try:
+                    await asyncio.wait_for(self._wake.wait(), timeout=CLASSIC_DRAIN_IDLE)
+                except TimeoutError:
+                    pass
         except asyncio.CancelledError:
             return
 
@@ -480,14 +489,23 @@ class EntertainmentEngine:
         data = _v1_state_to_service_data(body)
         if not data:
             return
-        pending = mapping.pending_data if mapping.dirty and mapping.pending_data else {}
+        pending = (
+            mapping.pending_data
+            if mapping.dirty and mapping.pending_data and mapping.explicit_transition
+            else {}  # nothing queued, or a stream-mode slot: start fresh
+        )
         if data.get("_service") == "turn_off":
             pending = {}  # anything queued before an "off" is moot
+        elif pending.get("_service") == "turn_off":
+            if body.get("on") is not True:
+                return  # colour tweaks while the light is being turned off are moot
+            pending = {}  # explicit on: supersedes the queued off
         pending.update(data)
         pending["entity_id"] = mapping.entity_id
         mapping.pending_data = pending
         mapping.explicit_transition = True
         mapping.dirty = True
+        self._wake.set()
         self._ensure_drain_task()
 
     def _schedule_update(self, channel: ChannelColor, color_space: int) -> None:
@@ -555,3 +573,4 @@ class EntertainmentEngine:
         # Write into the slot — drain loop picks up the freshest value
         mapping.pending_data = service_data
         mapping.dirty = True
+        self._wake.set()

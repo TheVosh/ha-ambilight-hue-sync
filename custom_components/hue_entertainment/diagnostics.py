@@ -33,7 +33,7 @@ async def async_get_config_entry_diagnostics(
             ],
         },
         "engine": data.engine.stats,
-        "dtls": {"frames_dropped_in_mailbox": data.mailbox.dropped},
+        "dtls": {"frames_coalesced_in_mailbox": data.mailbox.coalesced},
     }
 
 

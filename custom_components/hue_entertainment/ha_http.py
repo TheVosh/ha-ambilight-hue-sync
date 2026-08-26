@@ -35,14 +35,25 @@ DATA_HTTP_HOST = f"{DOMAIN}_http_host"
 # instead of a view: see HueHttpHost._install_api_config_shim.
 _HA_OWNED = {("GET", "/api/config")}
 
+# Usernames issued by HueAPIServer are uuid4().hex — 32 lowercase hex chars.
+USERNAME_PATTERN = "[0-9a-f]{32}"
+_PROXY_HEADERS = (
+    "X-Forwarded-For",
+    "X-Forwarded-Host",
+    "X-Forwarded-Proto",
+    "X-Real-IP",
+    "Forwarded",
+)
+
 
 def is_lan_request(request: web.Request) -> bool:
-    """True when the client address is not globally routable (LAN, loopback, link-local, CGNAT).
-
-    HA's forwarded middleware has already replaced ``request.remote`` with the
-    real client when a trusted reverse proxy is in front, so a request arriving
-    from the internet via such a proxy is correctly seen as non-LAN.
-    """
+    """True for a direct (unproxied) request from a non-globally-routable address."""
+    if any(h in request.headers for h in _PROXY_HEADERS):
+        # Forwarded by some proxy.  If HA trusts it, request.remote already
+        # holds the real client; if it doesn't, remote is the proxy's LAN
+        # address and we can't tell where the request came from.  Hue clients
+        # never speak through a proxy, so refuse either way.
+        return False
     remote = request.remote
     if not remote:
         return False
@@ -104,9 +115,20 @@ class HueHttpHost:
         for method, path, attr in HueAPIServer.ROUTES:
             if (method, path) in _HA_OWNED:
                 continue
-            self._hass.http.register_view(_HueView(self, method, path, attr))
+            # Constrain {username} to our credential format so the wildcard
+            # routes can never capture other integrations' /api/<name>/... views
+            # (webhook, config, camera_proxy, ...) registered after us.
+            hosted_path = path.replace("{username}", "{username:" + USERNAME_PATTERN + "}")
+            self._hass.http.register_view(_HueView(self, method, hosted_path, attr))
         if not self._install_api_config_shim():
-            self._hass.http.register_view(_HueView(self, "GET", "/api/config", "_handle_config"))
+            if "api" in self._hass.config.components:
+                _LOGGER.warning("Could not shim HA's GET /api/config; Hue clients get HA's 401")
+            else:
+                # `api` is not loaded (after_dependencies guarantees it would be by
+                # now if configured) — safe to own the path ourselves.
+                self._hass.http.register_view(
+                    _HueView(self, "GET", "/api/config", "_handle_config")
+                )
         _LOGGER.debug("Hue API views registered on Home Assistant's HTTP server")
 
     def _install_api_config_shim(self) -> bool:

@@ -148,8 +148,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: HueEntertainmentConfigEn
             return None
         return bytes.fromhex(hex_key)
 
-    # DTLS library logs under "dtls_psk.server" (separate from this integration).
-    # Enable with: logger: logs: dtls_psk.server: debug
+    # DTLS logs under custom_components.hue_entertainment.dtls_psk.server
+    # (enable separately for handshake-level debug).
     # Frames are handed over through a single-slot mailbox (freshest wins) so a
     # stalled loop never accumulates a backlog of stale frames.
     mailbox = FrameMailbox(hass.loop, engine.handle_frame)
@@ -308,10 +308,12 @@ async def async_unload_entry(hass: HomeAssistant, entry: HueEntertainmentConfigE
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
     data = entry.runtime_data
     data.cancel_watchdog()
-    await data.engine.async_restore_lights()
+    # Same order as HA shutdown: stop the inputs first so no frame re-dirties a
+    # slot while the lights are being restored.
     await data.dtls_server.async_stop()
     await data.api_server.async_stop()
     await data.discovery.async_stop()
+    await data.engine.async_restore_lights()
     return unload_ok
 
 

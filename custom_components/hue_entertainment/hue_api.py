@@ -417,8 +417,14 @@ class HueAPIServer:
         )
 
     async def _handle_config(self, request: web.Request) -> web.Response:
-        """GET /api/nouser/config and /api/config — basic bridge info for discovery."""
-        return web.json_response(self._build_v1_config())
+        """GET /api/nouser/config and /api/config — basic bridge info for discovery.
+
+        Like a real bridge, the unauthenticated config omits ``whitelist``: a
+        username is the only credential the REST API checks.
+        """
+        config = self._build_v1_config()
+        config.pop("whitelist", None)
+        return web.json_response(config)
 
     async def _handle_config_auth(self, request: web.Request) -> web.Response:
         """GET /api/{username}/config — authenticated config."""
@@ -636,10 +642,14 @@ class HueAPIServer:
 
     async def _handle_v1_catchall(self, request: web.Request) -> web.Response:
         """Catch-all GET for unimplemented v1 resources — avoids 404s."""
+        if self._check_username(request) is None:
+            return self._unauthorized_response()
         return web.json_response({})
 
     async def _handle_v1_put_catchall(self, request: web.Request) -> web.Response:
         """Catch-all PUT for unimplemented v1 resources — echo success."""
+        if self._check_username(request) is None:
+            return self._unauthorized_response()
         resource = request.match_info.get("resource", "")
         rid = request.match_info.get("id", "")
         param = request.match_info.get("param", "")
@@ -664,6 +674,8 @@ class HueAPIServer:
 
     async def _handle_v1_post_catchall(self, request: web.Request) -> web.Response:
         """Catch-all POST for unimplemented v1 resources."""
+        if self._check_username(request) is None:
+            return self._unauthorized_response()
         resource = request.match_info.get("resource", "")
         if resource == "lights":
             return web.json_response([{"success": {"/lights": "Searching for new devices"}}])
@@ -671,6 +683,8 @@ class HueAPIServer:
 
     async def _handle_v1_delete_catchall(self, request: web.Request) -> web.Response:
         """Catch-all DELETE for unimplemented v1 resources."""
+        if self._check_username(request) is None:
+            return self._unauthorized_response()
         resource = request.match_info.get("resource", "")
         rid = request.match_info.get("id", "")
         return web.json_response([{"success": f"/{resource}/{rid} deleted"}])

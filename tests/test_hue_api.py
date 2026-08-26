@@ -122,7 +122,7 @@ class TestDiscoveryConfig:
         assert data["apiversion"] == BRIDGE_API_VERSION
         assert data["swversion"] == BRIDGE_SW_VERSION
         assert data["ipaddress"] == _HOST_IP
-        assert "whitelist" in data
+        assert "whitelist" not in data  # unauthenticated: never list usernames
         assert "zigbeechannel" in data
 
     @pytest.mark.asyncio
@@ -130,6 +130,8 @@ class TestDiscoveryConfig:
         client, _ = api
         nouser = await (await client.get("/api/nouser/config")).json()
         auth = await (await client.get("/api/someuser/config")).json()
+        whitelist = auth.pop("whitelist")  # only the authenticated config lists users
+        assert "someuser" in whitelist
         assert nouser == auth
 
     @pytest.mark.asyncio
