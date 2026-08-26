@@ -1,0 +1,10 @@
+# Test/lint toolchain (CI and local venv). Runtime deps come from Home Assistant itself.
+cffi>=1.17
+aiohttp>=3.10
+zeroconf>=0.132
+pytest>=8
+pytest-asyncio>=0.24
+mypy>=1.11
+ruff>=0.6
+# Home Assistant test harness (pulls in homeassistant at a matching version)
+pytest-homeassistant-custom-component

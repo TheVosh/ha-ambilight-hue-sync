@@ -9,3 +9,6 @@ __pycache__/
 lib/
 examples/
 notes/
+
+# Local virtualenv for the HA test harness
+.venv/

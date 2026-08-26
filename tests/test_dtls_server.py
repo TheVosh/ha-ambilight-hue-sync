@@ -7,11 +7,11 @@ import subprocess
 import time
 
 import pytest
+from conftest import free_udp_port
 from hue_entertainment.dtls_psk import DTLSPSKServer
 
 TEST_PSK_IDENTITY = "test-user-abc123"
 TEST_PSK_KEY = bytes.fromhex("deadbeefcafebabe1234567890abcdef")
-TEST_PORT = 22100  # Use a high port to avoid permission issues
 
 
 def psk_callback(identity: str) -> bytes | None:
@@ -38,7 +38,7 @@ class TestDTLSPSKServer:
         frames = []
         server = DTLSPSKServer(
             host="127.0.0.1",
-            port=TEST_PORT,
+            port=free_udp_port(),
             psk_callback=psk_callback,
             frame_callback=frames.append,
         )
@@ -52,7 +52,7 @@ class TestDTLSPSKServer:
         """async_stop returns within a few poll intervals and the thread exits."""
         server = DTLSPSKServer(
             host="127.0.0.1",
-            port=TEST_PORT,
+            port=free_udp_port(),
             psk_callback=psk_callback,
             frame_callback=lambda _f: None,
             read_timeout=30.0,
@@ -76,9 +76,10 @@ class TestDTLSPSKServer:
             if len(frames) >= 3:
                 frame_event.set()
 
+        port = free_udp_port()
         server = DTLSPSKServer(
             host="127.0.0.1",
-            port=TEST_PORT + 1,
+            port=port,
             psk_callback=psk_callback,
             frame_callback=on_frame,
         )
@@ -97,7 +98,7 @@ class TestDTLSPSKServer:
                     "-psk_identity",
                     TEST_PSK_IDENTITY,
                     "-connect",
-                    f"127.0.0.1:{TEST_PORT + 1}",
+                    f"127.0.0.1:{port}",
                     "-quiet",
                 ],
                 stdin=subprocess.PIPE,
@@ -131,9 +132,10 @@ class TestDTLSPSKServer:
     async def test_wrong_psk_rejected(self):
         """Server rejects a client with the wrong PSK."""
         frames = []
+        port = free_udp_port()
         server = DTLSPSKServer(
             host="127.0.0.1",
-            port=TEST_PORT + 2,
+            port=port,
             psk_callback=psk_callback,
             frame_callback=frames.append,
         )
@@ -151,7 +153,7 @@ class TestDTLSPSKServer:
                     "-psk_identity",
                     TEST_PSK_IDENTITY,
                     "-connect",
-                    f"127.0.0.1:{TEST_PORT + 2}",
+                    f"127.0.0.1:{port}",
                     "-quiet",
                 ],
                 stdin=subprocess.PIPE,

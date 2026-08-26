@@ -23,7 +23,7 @@ repos:
         types: [python]
     -   id: pytest
         name: pytest (unit tests only; run test_dtls_server manually)
-        entry: python3 -m pytest tests/test_entertainment.py tests/test_hue_api.py tests/test_discovery.py tests/test_user_store.py
+        entry: python3 -m pytest tests/ --ignore=tests/test_dtls_server.py --ignore=tests/test_e2e.py
         language: system
         pass_filenames: false
         types_or: [python, toml]

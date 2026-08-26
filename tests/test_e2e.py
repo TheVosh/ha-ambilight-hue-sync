@@ -22,6 +22,7 @@ import pytest
 import pytest_asyncio
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
+from conftest import free_udp_port
 from hue_entertainment.dtls_psk import DTLSPSKServer
 
 # ---------------------------------------------------------------------------
@@ -59,9 +60,6 @@ _BRIDGE_ID = "001788FFFE654321"
 _MAC = "00:17:88:65:43:21"
 _CONFIG_ID = "e2e-config-uuid-0001"
 _LIGHTS = ["light.a", "light.b", "light.c"]
-
-# Use a high port well away from test_dtls_server.py (22100–22102)
-E2E_DTLS_PORT = 22200
 
 
 # ---------------------------------------------------------------------------
@@ -122,7 +120,7 @@ async def bridge():
     loop = asyncio.get_running_loop()
     dtls_server = DTLSPSKServer(
         host="127.0.0.1",
-        port=E2E_DTLS_PORT,
+        port=free_udp_port(),
         psk_callback=psk_lookup,
         frame_callback=on_frame,
         loop=loop,
@@ -174,7 +172,7 @@ class TestE2EFlow:
                 "-psk_identity",
                 username,
                 "-connect",
-                f"127.0.0.1:{E2E_DTLS_PORT}",
+                f"127.0.0.1:{dtls_server._port}",
                 "-quiet",
             ],
             stdin=subprocess.PIPE,
@@ -226,7 +224,7 @@ class TestE2EFlow:
                 "-psk_identity",
                 username,
                 "-connect",
-                f"127.0.0.1:{E2E_DTLS_PORT}",
+                f"127.0.0.1:{dtls_server._port}",
                 "-quiet",
             ],
             stdin=subprocess.PIPE,
@@ -262,7 +260,7 @@ class TestE2EFlow:
                 "-psk_identity",
                 unknown_user,
                 "-connect",
-                f"127.0.0.1:{E2E_DTLS_PORT}",
+                f"127.0.0.1:{dtls_server._port}",
                 "-quiet",
             ],
             stdin=subprocess.PIPE,

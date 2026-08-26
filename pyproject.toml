@@ -1,5 +1,5 @@
 [tool.pytest.ini_options]
-asyncio_mode = "strict"
+asyncio_mode = "auto"
 testpaths = [
     "tests/test_dtls_server.py",
     "tests/test_entertainment.py",
@@ -7,6 +7,7 @@ testpaths = [
     "tests/test_discovery.py",
     "tests/test_user_store.py",
     "tests/test_e2e.py",
+    "tests/test_integration.py",
 ]
 
 [tool.ruff]
