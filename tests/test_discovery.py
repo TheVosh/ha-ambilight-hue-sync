@@ -87,10 +87,9 @@ class TestServiceInfoConstruction:
         mock_zc_cls, mock_zc, mock_info_cls, _ = _make_mocks()
         mock_zc.async_register_service = AsyncMock()
         with (
-            patch.object(_discovery, "AsyncZeroconf", mock_zc_cls),
             patch.object(_discovery, "AsyncServiceInfo", mock_info_cls),
         ):
-            await _make_discovery().async_start()
+            await _make_discovery(async_zeroconf=mock_zc).async_start()
         _, kwargs = mock_info_cls.call_args
         assert kwargs["name"] == f"Philips Hue - {_LAST6}._hue._tcp.local."
 
@@ -99,10 +98,9 @@ class TestServiceInfoConstruction:
         mock_zc_cls, mock_zc, mock_info_cls, _ = _make_mocks()
         mock_zc.async_register_service = AsyncMock()
         with (
-            patch.object(_discovery, "AsyncZeroconf", mock_zc_cls),
             patch.object(_discovery, "AsyncServiceInfo", mock_info_cls),
         ):
-            await _make_discovery().async_start()
+            await _make_discovery(async_zeroconf=mock_zc).async_start()
         _, kwargs = mock_info_cls.call_args
         assert kwargs["type_"] == "_hue._tcp.local."
 
@@ -111,10 +109,11 @@ class TestServiceInfoConstruction:
         mock_zc_cls, mock_zc, mock_info_cls, _ = _make_mocks()
         mock_zc.async_register_service = AsyncMock()
         with (
-            patch.object(_discovery, "AsyncZeroconf", mock_zc_cls),
             patch.object(_discovery, "AsyncServiceInfo", mock_info_cls),
         ):
-            await _make_discovery(bridge_id="001788fffe123456").async_start()
+            await _make_discovery(
+                async_zeroconf=mock_zc, bridge_id="001788fffe123456"
+            ).async_start()
         _, kwargs = mock_info_cls.call_args
         assert kwargs["properties"]["bridgeid"] == "001788FFFE123456"
 
@@ -123,10 +122,9 @@ class TestServiceInfoConstruction:
         mock_zc_cls, mock_zc, mock_info_cls, _ = _make_mocks()
         mock_zc.async_register_service = AsyncMock()
         with (
-            patch.object(_discovery, "AsyncZeroconf", mock_zc_cls),
             patch.object(_discovery, "AsyncServiceInfo", mock_info_cls),
         ):
-            await _make_discovery().async_start()
+            await _make_discovery(async_zeroconf=mock_zc).async_start()
         _, kwargs = mock_info_cls.call_args
         assert kwargs["properties"]["modelid"] == BRIDGE_MODEL_ID
 
@@ -135,10 +133,9 @@ class TestServiceInfoConstruction:
         mock_zc_cls, mock_zc, mock_info_cls, _ = _make_mocks()
         mock_zc.async_register_service = AsyncMock()
         with (
-            patch.object(_discovery, "AsyncZeroconf", mock_zc_cls),
             patch.object(_discovery, "AsyncServiceInfo", mock_info_cls),
         ):
-            await _make_discovery().async_start()
+            await _make_discovery(async_zeroconf=mock_zc).async_start()
         _, kwargs = mock_info_cls.call_args
         assert kwargs["addresses"] == [socket.inet_aton(_HOST_IP)]
 
@@ -147,10 +144,9 @@ class TestServiceInfoConstruction:
         mock_zc_cls, mock_zc, mock_info_cls, _ = _make_mocks()
         mock_zc.async_register_service = AsyncMock()
         with (
-            patch.object(_discovery, "AsyncZeroconf", mock_zc_cls),
             patch.object(_discovery, "AsyncServiceInfo", mock_info_cls),
         ):
-            await _make_discovery(port=9443).async_start()
+            await _make_discovery(async_zeroconf=mock_zc, port=9443).async_start()
         _, kwargs = mock_info_cls.call_args
         assert kwargs["port"] == 9443
 
@@ -159,10 +155,9 @@ class TestServiceInfoConstruction:
         mock_zc_cls, mock_zc, mock_info_cls, _ = _make_mocks()
         mock_zc.async_register_service = AsyncMock()
         with (
-            patch.object(_discovery, "AsyncZeroconf", mock_zc_cls),
             patch.object(_discovery, "AsyncServiceInfo", mock_info_cls),
         ):
-            await _make_discovery().async_start()
+            await _make_discovery(async_zeroconf=mock_zc).async_start()
         _, kwargs = mock_info_cls.call_args
         assert kwargs["server"] == f"philips-hue-{_LAST6.lower()}.local."
 
@@ -178,30 +173,28 @@ class TestLifecycle:
         mock_zc_cls, mock_zc, mock_info_cls, mock_info = _make_mocks()
         mock_zc.async_register_service = AsyncMock()
         with (
-            patch.object(_discovery, "AsyncZeroconf", mock_zc_cls),
             patch.object(_discovery, "AsyncServiceInfo", mock_info_cls),
         ):
-            await _make_discovery().async_start()
+            await _make_discovery(async_zeroconf=mock_zc).async_start()
         mock_zc.async_register_service.assert_awaited_once_with(mock_info)
 
     @pytest.mark.asyncio
-    async def test_stop_unregisters_and_closes(self):
+    async def test_stop_unregisters_but_never_closes_shared_zeroconf(self):
         mock_zc_cls, mock_zc, mock_info_cls, mock_info = _make_mocks()
         mock_zc.async_register_service = AsyncMock()
         mock_zc.async_unregister_service = AsyncMock()
         mock_zc.async_close = AsyncMock()
         with (
-            patch.object(_discovery, "AsyncZeroconf", mock_zc_cls),
             patch.object(_discovery, "AsyncServiceInfo", mock_info_cls),
         ):
-            disc = _make_discovery()
+            disc = _make_discovery(async_zeroconf=mock_zc)
             await disc.async_start()
             await disc.async_stop()
         mock_zc.async_unregister_service.assert_awaited_once_with(mock_info)
-        mock_zc.async_close.assert_awaited_once()
+        mock_zc.async_close.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_stop_before_start_is_noop(self):
         """async_stop with no prior async_start must not raise."""
-        disc = _make_discovery()
+        disc = _make_discovery(async_zeroconf=AsyncMock())
         await disc.async_stop()  # should not raise

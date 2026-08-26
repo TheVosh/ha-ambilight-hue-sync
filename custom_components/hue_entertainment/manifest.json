@@ -1,12 +1,21 @@
 {
-  "domain": "hue_entertainment",
-  "name": "Hue Entertainment Bridge",
-  "codeowners": ["@83noit"],
+  "codeowners": [
+    "@83noit"
+  ],
   "config_flow": true,
-  "dependencies": ["network", "zeroconf"],
+  "dependencies": [
+    "network",
+    "zeroconf"
+  ],
   "documentation": "https://github.com/83noit/ha-hue-entertainment",
+  "domain": "hue_entertainment",
+  "integration_type": "service",
   "iot_class": "local_push",
   "issue_tracker": "https://github.com/83noit/ha-hue-entertainment/issues",
+  "loggers": [
+    "custom_components.hue_entertainment.dtls_psk.server"
+  ],
+  "name": "Hue Entertainment Bridge",
   "requirements": [],
   "version": "0.1.1"
 }

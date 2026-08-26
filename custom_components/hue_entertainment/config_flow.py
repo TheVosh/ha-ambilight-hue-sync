@@ -262,9 +262,9 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
     async def async_step_pairing(self, user_input=None):
         """Open the link button and wait for the TV to pair."""
         if self._pairing_task is None:
-            entry_data = self.hass.data[DOMAIN][self.config_entry.entry_id]
-            api_server: HueAPIServer = entry_data["api_server"]
-            user_store: UserStore = entry_data["user_store"]
+            runtime = self.config_entry.runtime_data
+            api_server: HueAPIServer = runtime.api_server
+            user_store: UserStore = runtime.user_store
             api_server.set_link_button(True)
             initial_users = set(user_store.users.keys())
             self._pairing_task = self.hass.async_create_task(

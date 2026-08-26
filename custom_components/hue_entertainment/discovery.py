@@ -5,7 +5,6 @@ from __future__ import annotations
 import logging
 import socket
 
-from zeroconf import IPVersion
 from zeroconf.asyncio import AsyncServiceInfo, AsyncZeroconf
 
 from .const import BRIDGE_MODEL_ID
@@ -21,13 +20,12 @@ class HueBridgeDiscovery:
         bridge_id: str,
         host_ip: str,
         port: int,
-        async_zeroconf: AsyncZeroconf | None = None,
+        async_zeroconf: AsyncZeroconf,
     ) -> None:
         self._bridge_id = bridge_id
         self._host_ip = host_ip
         self._port = port
-        self._external_zeroconf = async_zeroconf
-        self._zeroconf: AsyncZeroconf | None = None
+        self._zeroconf = async_zeroconf  # HA's shared instance — never closed here
         self._service_info: AsyncServiceInfo | None = None
 
     async def async_start(self) -> None:
@@ -47,11 +45,6 @@ class HueBridgeDiscovery:
             server=f"philips-hue-{last6.lower()}.local.",
         )
 
-        if self._external_zeroconf is not None:
-            self._zeroconf = self._external_zeroconf
-        else:
-            self._zeroconf = AsyncZeroconf(ip_version=IPVersion.V4Only)
-
         await self._zeroconf.async_register_service(self._service_info)
         _LOGGER.info(
             "mDNS: advertising %s at %s:%d",
@@ -62,9 +55,7 @@ class HueBridgeDiscovery:
 
     async def async_stop(self) -> None:
         """Unregister the mDNS service."""
-        if self._zeroconf and self._service_info:
+        if self._service_info:
             await self._zeroconf.async_unregister_service(self._service_info)
-            # Only close zeroconf if we created it (not HA's shared instance)
-            if self._external_zeroconf is None:
-                await self._zeroconf.async_close()
+            self._service_info = None
             _LOGGER.info("mDNS: service unregistered")

@@ -20,7 +20,6 @@
             pythonPkgs.cffi
             pythonPkgs.pytest
             pythonPkgs.pytest-asyncio
-            pythonPkgs.cryptography
             pythonPkgs.aiohttp
             pythonPkgs.zeroconf
             pythonPkgs.mypy

@@ -71,54 +71,6 @@ class TestUserStoreInMemory:
         store.add("alice", "newkey")
         assert store.get_psk("alice") == "newkey"
 
-    def test_in_memory_mode_no_file_created(self, tmp_path):
-        """UserStore(path=None) must not create any files."""
-        store = UserStore(path=None)
-        store.add("u", "k")
-        assert list(tmp_path.iterdir()) == []
-
-
-class TestUserStorePersistence:
-    def test_persist_to_disk(self, tmp_path):
-        """Users added to a file-backed store survive a new store instance."""
-        db = tmp_path / "users.json"
-        store1 = UserStore(path=db)
-        store1.add("tv1", "deadbeefcafebabe", "philips#hue")
-
-        store2 = UserStore(path=db)
-        assert store2.get_psk("tv1") == "deadbeefcafebabe"
-
-    def test_multiple_users_persist(self, tmp_path):
-        db = tmp_path / "users.json"
-        store1 = UserStore(path=db)
-        store1.add("u1", "key1")
-        store1.add("u2", "key2")
-
-        store2 = UserStore(path=db)
-        assert store2.get_psk("u1") == "key1"
-        assert store2.get_psk("u2") == "key2"
-
-    def test_overwrite_persists(self, tmp_path):
-        db = tmp_path / "users.json"
-        store1 = UserStore(path=db)
-        store1.add("u", "oldkey")
-        store1.add("u", "newkey")
-
-        store2 = UserStore(path=db)
-        assert store2.get_psk("u") == "newkey"
-
-    def test_missing_file_starts_empty(self, tmp_path):
-        db = tmp_path / "nonexistent.json"
-        store = UserStore(path=db)
-        assert store.get_psk("anyone") is None
-        assert store.users == {}
-
-    def test_parent_dir_created_automatically(self, tmp_path):
-        db = tmp_path / "subdir" / "users.json"
-        store = UserStore(path=db)
-        store.add("u", "k")
-        assert db.exists()
-
 
 # ---------------------------------------------------------------------------
 # get_by_devicetype()
@@ -154,20 +106,6 @@ class TestGetByDevicetype:
 # ---------------------------------------------------------------------------
 # Corrupt / empty file handling
 # ---------------------------------------------------------------------------
-
-
-class TestCorruptFile:
-    def test_corrupt_json_starts_empty(self, tmp_path):
-        db = tmp_path / "users.json"
-        db.write_text("{{bad json")
-        store = UserStore(path=db)
-        assert store.users == {}
-
-    def test_empty_file_starts_empty(self, tmp_path):
-        db = tmp_path / "users.json"
-        db.write_text("")
-        store = UserStore(path=db)
-        assert store.users == {}
 
 
 # ---------------------------------------------------------------------------

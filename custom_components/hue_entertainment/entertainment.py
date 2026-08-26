@@ -11,6 +11,8 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
+from homeassistant.helpers.state import async_reproduce_state
+
 if TYPE_CHECKING:
     from homeassistant.core import HomeAssistant, State
 
@@ -291,6 +293,22 @@ class EntertainmentEngine:
             self._schedule_update(channel, color_space)
 
     @property
+    def stats(self) -> dict[str, Any]:
+        """Counters for diagnostics."""
+        return {
+            "active": self._active,
+            "lights": [m.entity_id for m in self._mappings.values()],
+            "session_frames_received": self._total_frames_received,
+            "session_commands_sent": self._total_commands_sent,
+            "seconds_since_last_frame": (
+                round(time.monotonic() - self.last_frame_time, 1) if self.last_frame_time else None
+            ),
+            "unavailable_lights": [
+                m.entity_id for m in self._mappings.values() if m.unavailable_logged
+            ],
+        }
+
+    @property
     def is_active(self) -> bool:
         """True while entertainment mode is in progress."""
         return self._active
@@ -365,8 +383,6 @@ class EntertainmentEngine:
         self._saved_states = None
         self.reset_stats()
         if saved:
-            from homeassistant.helpers.state import async_reproduce_state  # noqa: PLC0415
-
             await async_reproduce_state(
                 self._hass,
                 saved,

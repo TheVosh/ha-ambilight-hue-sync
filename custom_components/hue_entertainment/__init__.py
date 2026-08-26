@@ -6,6 +6,8 @@ import asyncio
 import ipaddress
 import logging
 import time
+from collections.abc import Callable
+from dataclasses import dataclass
 from urllib.parse import urlparse
 
 from homeassistant.components.network import async_get_source_ip
@@ -44,7 +46,24 @@ PLATFORMS = [Platform.BINARY_SENSOR]
 _LOGGER = logging.getLogger(__name__)
 
 
-async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+@dataclass
+class HueEntertainmentData:
+    """Runtime objects for one bridge (entry.runtime_data)."""
+
+    bridge_id: str
+    api_server: HueAPIServer
+    dtls_server: DTLSPSKServer
+    discovery: HueBridgeDiscovery
+    engine: EntertainmentEngine
+    user_store: UserStore
+    mailbox: FrameMailbox
+    cancel_watchdog: Callable[[], None]
+
+
+type HueEntertainmentConfigEntry = ConfigEntry[HueEntertainmentData]
+
+
+async def async_setup_entry(hass: HomeAssistant, entry: HueEntertainmentConfigEntry) -> bool:
     """Set up Hue Entertainment Bridge from a config entry."""
     light_entities: list[str] = entry.options.get(CONF_LIGHTS, entry.data.get(CONF_LIGHTS, []))
 
@@ -178,16 +197,17 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # same Zigbee-paced drain loop.
     api_server.set_light_command_callback(engine.handle_light_command)
 
-    # Store references for teardown and OptionsFlow access
-    hass.data.setdefault(DOMAIN, {})
-    hass.data[DOMAIN][entry.entry_id] = {
-        "api_server": api_server,
-        "dtls_server": dtls_server,
-        "discovery": discovery,
-        "engine": engine,
-        "user_store": user_store,
-        "cancel_watchdog": _cancel_watchdog,
-    }
+    # Runtime objects for the platforms, the options flow and diagnostics
+    entry.runtime_data = HueEntertainmentData(
+        bridge_id=bridge_id,
+        api_server=api_server,
+        dtls_server=dtls_server,
+        discovery=discovery,
+        engine=engine,
+        user_store=user_store,
+        mailbox=mailbox,
+        cancel_watchdog=_cancel_watchdog,
+    )
 
     async def _async_start(_event: Event | None = None) -> None:
         """Start servers once HA is fully running."""
@@ -257,21 +277,20 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     return True
 
 
-async def _async_update_listener(hass: HomeAssistant, entry: ConfigEntry) -> None:
+async def _async_update_listener(hass: HomeAssistant, entry: HueEntertainmentConfigEntry) -> None:
     """Reload the entry when its options change."""
     await hass.config_entries.async_reload(entry.entry_id)
 
 
-async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+async def async_unload_entry(hass: HomeAssistant, entry: HueEntertainmentConfigEntry) -> bool:
     """Unload a config entry."""
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
-    data = hass.data[DOMAIN].pop(entry.entry_id, {})
-    if data:
-        data["cancel_watchdog"]()
-        await data["engine"].async_restore_lights()
-        await data["dtls_server"].async_stop()
-        await data["api_server"].async_stop()
-        await data["discovery"].async_stop()
+    data = entry.runtime_data
+    data.cancel_watchdog()
+    await data.engine.async_restore_lights()
+    await data.dtls_server.async_stop()
+    await data.api_server.async_stop()
+    await data.discovery.async_stop()
     return unload_ok
 
 

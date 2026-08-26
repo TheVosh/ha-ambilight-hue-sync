@@ -15,9 +15,12 @@ import pytest
 # Bootstrap: mock homeassistant + load const/entertainment without HA install
 # ---------------------------------------------------------------------------
 
-for _mod_name in ["homeassistant", "homeassistant.core"]:
+for _mod_name in ["homeassistant", "homeassistant.core", "homeassistant.helpers"]:
     if _mod_name not in sys.modules:
         sys.modules[_mod_name] = MagicMock()
+_helpers_state = MagicMock()
+_helpers_state.async_reproduce_state = AsyncMock()
+sys.modules["homeassistant.helpers.state"] = _helpers_state
 
 _base = Path(__file__).parent.parent / "custom_components" / "hue_entertainment"
 
@@ -560,10 +563,7 @@ class TestSnapshotRestore:
         await engine.async_snapshot_lights()
 
         reproduce_mock = AsyncMock()
-        with patch.dict(
-            "sys.modules",
-            {"homeassistant.helpers.state": MagicMock(async_reproduce_state=reproduce_mock)},
-        ):
+        with patch.object(_ent, "async_reproduce_state", reproduce_mock):
             await engine.async_restore_lights()
 
         assert engine.is_active is False
@@ -579,10 +579,7 @@ class TestSnapshotRestore:
         await engine.async_snapshot_lights()
 
         reproduce_mock = AsyncMock()
-        with patch.dict(
-            "sys.modules",
-            {"homeassistant.helpers.state": MagicMock(async_reproduce_state=reproduce_mock)},
-        ):
+        with patch.object(_ent, "async_reproduce_state", reproduce_mock):
             await engine.async_restore_lights()
             await engine.async_restore_lights()  # second call — no-op
 
@@ -593,10 +590,7 @@ class TestSnapshotRestore:
         engine, hass = _make_async_engine()
         hass.states.get.return_value = MagicMock()
         reproduce_mock = AsyncMock()
-        with patch.dict(
-            "sys.modules",
-            {"homeassistant.helpers.state": MagicMock(async_reproduce_state=reproduce_mock)},
-        ):
+        with patch.object(_ent, "async_reproduce_state", reproduce_mock):
             await engine.async_restore_lights()
         reproduce_mock.assert_not_called()
 
@@ -821,11 +815,6 @@ def _make_live_engine(channels: int = 2, states: dict | None = None):
     hass = MagicMock()
     hass.async_create_task = lambda coro: asyncio.get_running_loop().create_task(coro)
     hass.services.async_call = AsyncMock()
-    # async_restore_lights imports homeassistant.helpers.state lazily
-    helpers_state = MagicMock()
-    helpers_state.async_reproduce_state = AsyncMock()
-    sys.modules.setdefault("homeassistant.helpers", MagicMock())
-    sys.modules["homeassistant.helpers.state"] = helpers_state
     states = states or {}
 
     def get_state(entity_id):
