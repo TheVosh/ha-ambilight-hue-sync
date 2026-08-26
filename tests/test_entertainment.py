@@ -573,6 +573,17 @@ class TestSnapshotRestore:
         assert call_args[1]["reproduce_options"]["transition"] == RESTORE_TRANSITION
 
     @pytest.mark.asyncio
+    async def test_restore_failure_is_logged_not_raised(self, caplog):
+        engine, hass = _make_async_engine(channels=1)
+        hass.states.get.return_value = MagicMock()
+        await engine.async_snapshot_lights()
+        reproduce_mock = AsyncMock(side_effect=RuntimeError("ApplicationController is not running"))
+        with patch.object(_ent, "async_reproduce_state", reproduce_mock):
+            await engine.async_restore_lights()
+        assert engine.is_active is False
+        assert "Could not restore 1 lights" in caplog.text
+
+    @pytest.mark.asyncio
     async def test_restore_is_idempotent(self):
         engine, hass = _make_async_engine(channels=1)
         hass.states.get.return_value = MagicMock()

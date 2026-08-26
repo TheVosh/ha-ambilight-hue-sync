@@ -383,11 +383,15 @@ class EntertainmentEngine:
         self._saved_states = None
         self.reset_stats()
         if saved:
-            await async_reproduce_state(
-                self._hass,
-                saved,
-                reproduce_options={"transition": RESTORE_TRANSITION},
-            )
+            try:
+                await async_reproduce_state(
+                    self._hass,
+                    saved,
+                    reproduce_options={"transition": RESTORE_TRANSITION},
+                )
+            except Exception as err:  # noqa: BLE001 — best effort (e.g. ZHA already down at shutdown)
+                _LOGGER.warning("Could not restore %d lights: %s", len(saved), err)
+                return
             _LOGGER.info("Restored %d lights to pre-entertainment state", len(saved))
 
     async def _drain_loop(self) -> None:
