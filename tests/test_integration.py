@@ -353,3 +353,43 @@ async def test_config_flow_pairs_through_hass_http(hass, hass_client_no_auth):
     resp = await anon.get("/api/nouser/config")
     assert resp.status == 200
     assert await hass.config_entries.async_unload(entry.entry_id)
+
+
+@pytest.mark.parametrize(
+    ("remote", "lan"),
+    [
+        ("10.86.2.252", True),
+        ("192.168.1.20", True),
+        ("172.16.0.9", True),
+        ("127.0.0.1", True),
+        ("fe80::1", True),
+        ("fd59:f72e:dc72:d0::443", True),
+        ("8.8.8.8", False),
+        ("2606:4700::1111", False),
+        ("", False),
+        ("not-an-ip", False),
+    ],
+)
+def test_is_lan_request(remote, lan):
+    from unittest.mock import Mock  # noqa: PLC0415
+
+    from custom_components.hue_entertainment.ha_http import is_lan_request  # noqa: PLC0415
+
+    assert is_lan_request(Mock(remote=remote)) is lan
+
+
+async def test_hue_routes_hidden_from_non_lan_clients(hass, hass_client_no_auth, hass_client):
+    assert await async_setup_component(hass, "api", {})
+    entry = await _setup(hass, _entry(**{CONF_HTTP_MODE: HTTP_MODE_HOMEASSISTANT}))
+    anon = await hass_client_no_auth()
+    with patch("custom_components.hue_entertainment.ha_http.is_lan_request", return_value=False):
+        resp = await anon.get("/api/nouser/config")
+        assert resp.status == 404
+        resp = await anon.get("/description.xml")
+        assert resp.status == 404
+        resp = await anon.get("/api/config")  # falls through to HA: 401 for anonymous
+        assert resp.status == 401
+        authed = await hass_client()
+        resp = await authed.get("/api/config")
+        assert resp.status == 200 and "components" in await resp.json()
+    assert await hass.config_entries.async_unload(entry.entry_id)

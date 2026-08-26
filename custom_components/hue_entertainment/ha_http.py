@@ -13,6 +13,7 @@ server).  With nothing attached they answer 503.
 from __future__ import annotations
 
 import logging
+from ipaddress import ip_address
 from typing import TYPE_CHECKING, Any
 
 from aiohttp import web
@@ -33,6 +34,23 @@ DATA_HTTP_HOST = f"{DOMAIN}_http_host"
 # it unauthenticated to validate the bridge, so that one route gets a shim
 # instead of a view: see HueHttpHost._install_api_config_shim.
 _HA_OWNED = {("GET", "/api/config")}
+
+
+def is_lan_request(request: web.Request) -> bool:
+    """True when the client address is not globally routable (LAN, loopback, link-local, CGNAT).
+
+    HA's forwarded middleware has already replaced ``request.remote`` with the
+    real client when a trusted reverse proxy is in front, so a request arriving
+    from the internet via such a proxy is correctly seen as non-LAN.
+    """
+    remote = request.remote
+    if not remote:
+        return False
+    try:
+        addr = ip_address(remote)
+    except ValueError:
+        return False
+    return not addr.is_global
 
 
 @callback
@@ -109,7 +127,11 @@ class HueHttpHost:
 
                 async def shim(request: web.Request) -> web.StreamResponse:
                     target = self._target
-                    if target is None or request.get(KEY_AUTHENTICATED, False):
+                    if (
+                        target is None
+                        or request.get(KEY_AUTHENTICATED, False)
+                        or not is_lan_request(request)
+                    ):
                         return await original(request)
                     return await target.handle("_handle_config", request)
 
@@ -119,6 +141,11 @@ class HueHttpHost:
         return False
 
     async def dispatch(self, attr: str, request: web.Request) -> web.StreamResponse:
+        if not is_lan_request(request):
+            # Hue clients live on the LAN.  Through an internet-facing reverse
+            # proxy these unauthenticated routes would otherwise leak the
+            # bridge/network details to anyone.
+            raise web.HTTPNotFound
         target = self._target
         if target is None:
             return web.json_response(
