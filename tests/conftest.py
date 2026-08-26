@@ -3,8 +3,12 @@
 import sys
 from pathlib import Path
 
-# Add custom_components/ to path so hue_entertainment.dtls_psk can be imported
-sys.path.insert(0, str(Path(__file__).parent.parent / "custom_components"))
+# Repo root on the path so `custom_components.hue_entertainment` imports under a
+# bare `pytest tests/` (CI) as well as `python -m pytest`; custom_components/
+# itself so the protocol tests can import `hue_entertainment.dtls_psk`.
+_ROOT = Path(__file__).parent.parent
+sys.path.insert(0, str(_ROOT))
+sys.path.insert(0, str(_ROOT / "custom_components"))
 
 
 def free_udp_port() -> int:

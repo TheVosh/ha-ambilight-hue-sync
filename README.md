@@ -1,5 +1,11 @@
 # Hue Entertainment Bridge
 
+[![Tests](https://github.com/83noit/ha-hue-entertainment/actions/workflows/tests.yaml/badge.svg)](https://github.com/83noit/ha-hue-entertainment/actions/workflows/tests.yaml)
+[![HACS](https://github.com/83noit/ha-hue-entertainment/actions/workflows/hacs.yaml/badge.svg)](https://github.com/83noit/ha-hue-entertainment/actions/workflows/hacs.yaml)
+[![Hassfest](https://github.com/83noit/ha-hue-entertainment/actions/workflows/hassfest.yaml/badge.svg)](https://github.com/83noit/ha-hue-entertainment/actions/workflows/hassfest.yaml)
+[![Release](https://img.shields.io/github/v/release/83noit/ha-hue-entertainment?sort=semver)](https://github.com/83noit/ha-hue-entertainment/releases)
+[![HACS Default](https://img.shields.io/badge/HACS-Default-41BDF5.svg)](https://github.com/hacs/default)
+
 A Home Assistant integration that emulates a Philips Hue Bridge's **entertainment mode**, allowing a Hue-compatible TV (Ambilight) to control Zigbee lights managed by [ZHA](https://www.home-assistant.io/integrations/zha/).
 
 Your TV thinks it's talking to a real Hue Bridge. Your Zigbee bulbs change colour in sync with what's on screen.
@@ -93,7 +99,7 @@ redacted snapshot (paired clients, engine counters, options) to attach to bug re
 
 ## Port conflicts
 
-### Home Assistant on port 80 (HA 2026.8+, recommended)
+### Recommended: run Home Assistant itself on port 80 (HA 2026.8+)
 
 Since Home Assistant 2026.8 the frontend can listen on port 80 itself (Settings → System →
 Network → *HTTP server port*). When it does — plain HTTP, no certificate — this integration
@@ -107,11 +113,11 @@ One HA endpoint overlaps with the Hue API: `GET /api/config`. Unauthenticated re
 token reach Home Assistant's own handler as before.
 
 If Home Assistant stays on 8123, or serves HTTPS on 443, the integration runs its own server
-on port 80 and the options below apply.
+on port 80. When something else already owns port 80 on the host, pick one of the fallbacks below.
 
 The TV hardcodes port 80 for HTTP and port 2100 for DTLS. Port 80 cannot be changed — this is a Philips Hue protocol requirement, not a limitation of this integration. If something else (Traefik, Nginx, Pi-hole) already occupies port 80 on your HA host, you have two options.
 
-### Option 1 — Secondary IP address (recommended)
+### Fallback A — Secondary IP address (simplest)
 
 Assign a second IP address to your HA host and tell the integration to use it. The bridge binds exclusively to that IP, leaving port 80 on the primary IP free for your reverse proxy.
 
@@ -133,7 +139,7 @@ Go to **Configure** on the integration card, enter the secondary IP in **Bind IP
 
 > The TV discovers the bridge via mDNS, which will advertise the bind IP automatically — no manual IP configuration needed on the TV.
 
-### Option 2 — iptables redirect
+### Fallback B — iptables redirect
 
 If a secondary IP isn't possible, redirect traffic at the firewall level. This forwards connections arriving on a specific source (e.g. the TV's IP) from port 80 to a high port where the integration listens.
 
@@ -142,7 +148,7 @@ If a secondary IP isn't possible, redirect traffic at the firewall level. This f
 iptables -t nat -A PREROUTING -s <TV_IP> -p tcp --dport 80 -j REDIRECT --to-port 8080
 ```
 
-Then change the integration's HTTP port to 8080 via the config entry data. This is more fragile (requires knowing the TV's IP statically) and harder to maintain than Option 1.
+Then change the integration's HTTP port to 8080 via the config entry data. This is more fragile (requires knowing the TV's IP statically) and harder to maintain than Fallback A.
 
 ## Network requirements
 

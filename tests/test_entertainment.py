@@ -102,10 +102,36 @@ def _v1_channel(light_id: int, r: int, g: int, b: int, type_byte: int = 0) -> by
     return bytes([type_byte]) + struct.pack(">HHHH", light_id, r, g, b)
 
 
+class _FakeTask:
+    """Minimal asyncio.Task stand-in for the drain loop."""
+
+    def __init__(self) -> None:
+        self._done = False
+
+    def done(self) -> bool:
+        return self._done
+
+    def cancel(self) -> bool:
+        self._done = True
+        return True
+
+    def __await__(self):
+        if False:  # pragma: no cover — makes this a generator
+            yield
+        raise asyncio.CancelledError
+
+
 def _make_engine(channels: int = 2) -> tuple[EntertainmentEngine, MagicMock]:
     """Return an engine wired to a mock hass and N light mappings."""
     hass = MagicMock()
-    hass.async_create_task = MagicMock()
+
+    def _fake_create_task(coro):
+        # Close the coroutine so it never triggers "was never awaited"; return a
+        # task-like object that runs until cancelled and can be awaited after.
+        coro.close()
+        return _FakeTask()
+
+    hass.async_create_task = MagicMock(side_effect=_fake_create_task)
     mappings = [LightMapping(channel_id=i, entity_id=f"light.test_{i}") for i in range(channels)]
     engine = EntertainmentEngine(hass, mappings)
     return engine, hass
@@ -509,12 +535,9 @@ class TestParseHuestreamFrame:
 
 def _make_async_engine(channels: int = 2) -> tuple[EntertainmentEngine, MagicMock]:
     """Return an engine with a properly async-capable mock hass."""
-    hass = MagicMock()
-    hass.async_create_task = MagicMock()
+    engine, hass = _make_engine(channels)  # same task-swallowing hass
     # states.get returns a fake State object for each entity
     hass.states = MagicMock()
-    mappings = [LightMapping(channel_id=i, entity_id=f"light.test_{i}") for i in range(channels)]
-    engine = EntertainmentEngine(hass, mappings)
     return engine, hass
 
 
@@ -791,7 +814,6 @@ class TestV1StateTranslation:
 class TestHandleLightCommand:
     def test_merges_successive_puts_for_one_light(self):
         engine, hass = _make_engine(channels=3)
-        hass.async_create_task.return_value.done.return_value = False
         engine.handle_light_command(1, {"xy": [0.3, 0.4], "transitiontime": 4})
         engine.handle_light_command(1, {"bri": 254, "transitiontime": 4})
         m = engine._mappings[1]

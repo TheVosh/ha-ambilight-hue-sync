@@ -116,7 +116,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: HueEntertainmentConfigEn
     engine = EntertainmentEngine(hass, mappings)
 
     # HA-idiomatic persistent user store
-    ha_store = Store(hass, version=1, key=f"{DOMAIN}.users")
+    ha_store: Store[dict[str, dict]] = Store(hass, version=1, key=f"{DOMAIN}.users")
     user_store = UserStore(ha_store=ha_store)
     await user_store.async_load()
 
@@ -321,7 +321,7 @@ async def _async_get_host_ip(hass: HomeAssistant) -> str:
     """IP to advertise to the TV: HA's internal URL host if it is an IP, else the source IP."""
     try:
         host = urlparse(get_url(hass, prefer_external=False)).hostname
-        if host and not is_loopback(host) and _is_ip(host):
+        if host and _is_ip(host) and not is_loopback(ipaddress.ip_address(host)):
             return host
     except Exception:  # noqa: BLE001
         _LOGGER.debug("No usable internal URL; using HA's source IP")

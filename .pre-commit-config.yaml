@@ -17,7 +17,7 @@ repos:
         pass_filenames: false
     -   id: mypy
         name: mypy
-        entry: mypy custom_components/ --ignore-missing-imports
+        entry: bash -c 'if [ -x .venv/bin/python ]; then .venv/bin/python -m mypy custom_components/ --ignore-missing-imports; else mypy custom_components/ --ignore-missing-imports; fi'
         language: system
         pass_filenames: false
         types: [python]
