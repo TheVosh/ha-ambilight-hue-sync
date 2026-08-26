@@ -90,6 +90,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: HueEntertainmentConfigEn
     if use_ha_http:
         http_port = hass.http.server_port
         http_host = async_get_http_host(hass)
+        if hass.http.ssl_certificate is not None or http_port != 80:
+            # Explicit "homeassistant" mode on a setup the TV can't reach: Hue
+            # clients only ever try plain HTTP on port 80.
+            _LOGGER.warning(
+                "Hue API is served by Home Assistant on %s:%d, but Hue clients expect plain HTTP "
+                "on port 80 — set Home Assistant's HTTP server port to 80 without a certificate, "
+                "or switch the 'Hue API server' option back to Automatic",
+                "https" if hass.http.ssl_certificate else "http",
+                http_port,
+            )
     else:
         http_port = entry.options.get(
             CONF_API_PORT, entry.data.get(CONF_API_PORT, DEFAULT_API_PORT)
