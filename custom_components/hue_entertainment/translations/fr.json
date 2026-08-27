@@ -26,6 +26,7 @@
           "hue_host": "Hue Bridge"
         }
       },
+      "hue_bridge": {"title": "Pont Hue Home Assistant", "description": "Choisissez un pont Hue déjà configuré dans Home Assistant.", "data": {"ha_hue_bridge": "Pont Hue"}},
       "hue_pair": {
         "title": "Pair Hue Bridge",
         "description": "Press the link button on your Hue Bridge, then select Submit. Waiting for Hue Bridge authorization."
@@ -66,7 +67,15 @@
       "invalid_host": "Enter a Hue Bridge host.",
       "hue_pairing_failed": "Hue Bridge pairing failed. Check that its link button was pressed.",
       "hue_unreachable": "Hue Bridge unreachable.",
-      "no_entertainment_areas": "No Entertainment Areas found."
+      "no_entertainment_areas": "No Entertainment Areas found.",
+      "cannot_connect": "Impossible de se connecter au téléviseur Philips.",
+      "invalid_auth": "Le nom d’utilisateur ou le mot de passe TV a été refusé.",
+      "timeout": "Le téléviseur Philips n’a pas répondu à temps.",
+      "tls_error": "Le certificat TLS du téléviseur Philips n’a pas pu être vérifié.",
+      "invalid_topology": "Le téléviseur Philips a renvoyé une topologie Ambilight invalide.",
+      "unknown": "La connexion ou l’autorisation a échoué. Réessayez.",
+      "link_button_not_pressed": "Appuyez sur le bouton du pont Hue, puis réessayez.",
+      "bridge_unreachable": "Pont Hue inaccessible."
     }
   },
   "options": {

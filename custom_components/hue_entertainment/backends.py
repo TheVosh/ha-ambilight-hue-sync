@@ -56,6 +56,22 @@ class HomeAssistantLightBackend(EntertainmentOutputBackend):
         self.engine.handle_light_command(light_id, body)
 
 
+class DisabledOutputBackend(EntertainmentOutputBackend):
+    """Safe placeholder while a staged physical Hue setup is incomplete."""
+    async def async_start(self) -> None:
+        return
+
+    def send_frame(self, channels: list[ChannelColor], color_space: int) -> None:
+        return
+
+    async def async_stop(self) -> None:
+        return
+
+    @property
+    def stats(self) -> dict[str, Any]:
+        return {"configured": False, "type": "incomplete_hue_output"}
+
+
 class HueEntertainmentBackend(EntertainmentOutputBackend):
     """Native DTLS Hue Entertainment output to a physical Hue Bridge.
 

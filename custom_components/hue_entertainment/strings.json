@@ -24,6 +24,7 @@
         "description": "Enter the local IP address or hostname of your physical Hue Bridge.",
         "data": {"hue_host": "Hue Bridge"}
       },
+      "hue_bridge": {"title": "Home Assistant Hue Bridge", "description": "Choose a Hue Bridge already configured in Home Assistant.", "data": {"ha_hue_bridge": "Hue Bridge"}},
       "hue_pair": {
         "title": "Pair Hue Bridge",
         "description": "Press the link button on your Hue Bridge, then select Submit. Waiting for Hue Bridge authorization."
@@ -63,6 +64,14 @@
       "hue_pairing_failed": "Hue Bridge pairing failed. Check that its link button was pressed.",
       "hue_unreachable": "Hue Bridge unreachable.",
       "no_entertainment_areas": "No Entertainment Areas found."
+      ,"cannot_connect": "Cannot connect to the Philips TV.",
+      "invalid_auth": "TV username or password was rejected.",
+      "timeout": "The Philips TV did not respond in time.",
+      "tls_error": "The Philips TV TLS certificate could not be verified.",
+      "invalid_topology": "The Philips TV returned an invalid Ambilight topology.",
+      "unknown": "The connection or authorization failed. Try again.",
+      "link_button_not_pressed": "Press the Hue Bridge link button, then try again.",
+      "bridge_unreachable": "Hue Bridge unreachable."
     }
   },
   "options": {

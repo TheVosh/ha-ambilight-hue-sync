@@ -44,6 +44,7 @@ from .const import (
     CONF_REVERSE_TOP, CONF_REVERSE_BOTTOM, INPUT_PHILIPS_JOINTSPACE, DEFAULT_INPUT_MODE,
     DEFAULT_TV_API_VERSION, DEFAULT_TV_PORT, DEFAULT_TV_POLL_FPS, CONF_TV_CHANNEL_MAPPINGS,
     CONF_TV_INACTIVITY_TIMEOUT, DEFAULT_TV_INACTIVITY_TIMEOUT,
+    CONF_OUTPUT_CONFIGURED,
     BACKEND_HUE,
     DEFAULT_OUTPUT_BACKEND,
     DEFAULT_STREAM_FPS,
@@ -59,7 +60,7 @@ from .discovery import HueBridgeDiscovery
 from .dtls_psk import DTLSPSKServer
 from .entertainment import EntertainmentEngine, FrameMailbox, LightMapping
 from .entertainment import parse_huestream_frame
-from .backends import EntertainmentOutputBackend, HomeAssistantLightBackend, HueEntertainmentBackend
+from .backends import DisabledOutputBackend, EntertainmentOutputBackend, HomeAssistantLightBackend, HueEntertainmentBackend
 from .jointspace import PhilipsJointSpaceSource
 from .ha_http import async_get_http_host, resolve_use_ha_http
 from .hue_api import HueAPIServer
@@ -95,11 +96,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: HueEntertainmentConfigEn
         CONF_OUTPUT_BACKEND, entry.data.get(CONF_OUTPUT_BACKEND, DEFAULT_OUTPUT_BACKEND)
     )
     input_mode = entry.options.get(CONF_INPUT_MODE, entry.data.get(CONF_INPUT_MODE, DEFAULT_INPUT_MODE))
+    output_configured = entry.options.get(
+        CONF_OUTPUT_CONFIGURED, entry.data.get(CONF_OUTPUT_CONFIGURED, True)
+    )
     light_entities: list[str] = entry.options.get(CONF_LIGHTS, entry.data.get(CONF_LIGHTS, []))
     area_channels: list[dict] = entry.options.get(
         CONF_HUE_AREA_CHANNELS, entry.data.get(CONF_HUE_AREA_CHANNELS, [])
     )
-    if backend_name == BACKEND_HUE:
+    if backend_name == BACKEND_HUE and not output_configured:
+        backend: EntertainmentOutputBackend = DisabledOutputBackend()
+    elif backend_name == BACKEND_HUE:
         # The physical area's channel layout is persisted at configuration time.
         # It becomes the virtual bridge layout exposed to the TV, so virtual IDs
         # deterministically map by index to native physical channel IDs.
@@ -349,18 +355,19 @@ async def async_setup_entry(hass: HomeAssistant, entry: HueEntertainmentConfigEn
     )
 
     async def _async_start(_event: Event | None = None) -> None:
-        """Start servers once HA is fully running."""
-        try:
-            await api_server.async_start()
-            await dtls_server.async_start()
-        except OSError as err:
-            # Port in use (typically :80) or bind IP not on this host.
-            await dtls_server.async_stop()
-            await api_server.async_stop()
-            raise ConfigEntryNotReady(
-                f"Cannot bind Hue bridge ports (http={http_port}, dtls={ent_port}): {err}"
-            ) from err
-        await discovery.async_start()
+        """Start only the resources required by the configured TV input."""
+        if input_mode != INPUT_PHILIPS_JOINTSPACE:
+            try:
+                await api_server.async_start()
+                await dtls_server.async_start()
+            except OSError as err:
+                # Port in use (typically :80) or bind IP not on this host.
+                await dtls_server.async_stop()
+                await api_server.async_stop()
+                raise ConfigEntryNotReady(
+                    f"Cannot bind Hue bridge ports (http={http_port}, dtls={ent_port}): {err}"
+                ) from err
+            await discovery.async_start()
         if jointspace_source is not None:
             try:
                 await jointspace_source.async_start()
@@ -368,7 +375,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: HueEntertainmentConfigEn
             except Exception:
                 _LOGGER.warning("JointSpace Ambilight source is unavailable; it will retry on reload", exc_info=True)
         _LOGGER.info(
-            "Hue Entertainment Bridge started: bridge_id=%s, http=%s:%d, dtls=:%d, lights=%d, users=%d",
+            "Hue Entertainment Bridge started: input=%s, bridge_id=%s, http=%s:%d, dtls=:%d, lights=%d, users=%d",
+            input_mode,
             bridge_id,
             "hass" if use_ha_http else "standalone",
             http_port,
@@ -383,9 +391,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: HueEntertainmentConfigEn
         # Stop the servers first: HA's shutdown budget is short, and if the
         # light restore (transition) gets cut off the DTLS thread must not
         # outlive the event loop.
-        await dtls_server.async_stop()
-        await api_server.async_stop()
-        await discovery.async_stop()
+        if input_mode != INPUT_PHILIPS_JOINTSPACE:
+            await dtls_server.async_stop()
+            await api_server.async_stop()
+            await discovery.async_stop()
         if jointspace_source is not None:
             await jointspace_source.async_close()
         await backend.async_close()
@@ -437,9 +446,11 @@ async def async_unload_entry(hass: HomeAssistant, entry: HueEntertainmentConfigE
     data.cancel_watchdog()
     # Same order as HA shutdown: stop the inputs first so no frame re-dirties a
     # slot while the lights are being restored.
-    await data.dtls_server.async_stop()
-    await data.api_server.async_stop()
-    await data.discovery.async_stop()
+    input_mode = entry.options.get(CONF_INPUT_MODE, entry.data.get(CONF_INPUT_MODE, DEFAULT_INPUT_MODE))
+    if input_mode != INPUT_PHILIPS_JOINTSPACE:
+        await data.dtls_server.async_stop()
+        await data.api_server.async_stop()
+        await data.discovery.async_stop()
     if data.jointspace_source is not None:
         await data.jointspace_source.async_close()
     await data.backend.async_close()

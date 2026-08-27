@@ -21,6 +21,19 @@ _LOGGER = logging.getLogger(__name__)
 EDGES = ("left", "top", "right", "bottom")
 
 
+async def async_validate_jointspace(
+    session: aiohttp.ClientSession, host: str, username: str, password: str,
+    *, api_version: int, port: int, verify_ssl: bool,
+) -> dict[str, int]:
+    """Validate production JointSpace connectivity and return its topology."""
+    source = PhilipsJointSpaceSource(
+        session, host, username, password, {}, lambda _colors: None,
+        api_version=api_version, port=port, verify_ssl=verify_ssl,
+    )
+    await source._async_topology()  # validation deliberately shares production request code
+    return source.stats["topology"]
+
+
 @dataclass(frozen=True)
 class AmbilightPoint:
     """One measured TV-edge zone, positioned on the TV plane."""

@@ -8,6 +8,7 @@ import logging
 import uuid
 
 import voluptuous as vol
+import aiohttp
 from homeassistant import config_entries
 from homeassistant.components.network import async_get_source_ip
 from homeassistant.components.zeroconf import async_get_async_instance
@@ -20,6 +21,7 @@ from homeassistant.helpers.selector import (
     SelectSelectorMode,
     TextSelector,
 )
+from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .const import (
     CONF_BIND_IP,
@@ -37,6 +39,7 @@ from .const import (
     CONF_TV_PORT, CONF_TV_VERIFY_SSL, INPUT_LEGACY_HUESTREAM, INPUT_PHILIPS_JOINTSPACE,
     DEFAULT_INPUT_MODE, DEFAULT_TV_API_VERSION, DEFAULT_TV_PORT,
     CONF_TV_CHANNEL_MAPPINGS, TV_RELATIVE_POSITIONS,
+    CONF_OUTPUT_CONFIGURED,
     BACKEND_HOME_ASSISTANT,
     BACKEND_HUE,
     DEFAULT_OUTPUT_BACKEND,
@@ -51,6 +54,8 @@ from .const import (
 from .discovery import HueBridgeDiscovery
 from .ha_http import async_get_http_host, resolve_use_ha_http
 from .hue_api import HueAPIServer
+from .ha_hue import async_known_hue_bridges
+from .jointspace import async_validate_jointspace
 from .user_store import UserStore
 
 PAIRING_TIMEOUT = LINK_BUTTON_TIMEOUT
@@ -141,7 +146,7 @@ class HueEntertainmentConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):  # t
             if self._input_mode == INPUT_PHILIPS_JOINTSPACE:
                 return await self.async_step_jointspace()
             if self._backend == BACKEND_HUE:
-                return await self.async_step_hue_host()
+                return await self.async_step_hue_bridge()
             return await self.async_step_pre_pairing()
 
         return self.async_show_form(
@@ -165,24 +170,70 @@ class HueEntertainmentConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):  # t
             ),
         )
 
+    async def async_step_hue_bridge(self, user_input=None):
+        """Prefer an already configured official Home Assistant Hue bridge."""
+        bridges = async_known_hue_bridges(self.hass)
+        if len(bridges) == 1:
+            self._hue_host = bridges[0].host
+            _LOGGER.debug("Selected existing Home Assistant Hue bridge")
+            return await self.async_step_hue_pair()
+        if user_input is not None:
+            selected = user_input["ha_hue_bridge"]
+            if selected == "manual":
+                return await self.async_step_hue_host()
+            bridge = next(bridge for bridge in bridges if bridge.entry_id == selected)
+            self._hue_host = bridge.host
+            _LOGGER.debug("Selected existing Home Assistant Hue bridge")
+            return await self.async_step_hue_pair()
+        if not bridges:
+            return await self.async_step_hue_host()
+        return self.async_show_form(
+            step_id="hue_bridge",
+            data_schema=vol.Schema({vol.Required("ha_hue_bridge"): SelectSelector(
+                SelectSelectorConfig(options=[
+                    {"value": bridge.entry_id, "label": f"{bridge.name} ({bridge.host})"}
+                    for bridge in bridges
+                ] + [{"value": "manual", "label": "Enter a different Hue Bridge"}], mode=SelectSelectorMode.DROPDOWN))}),
+        )
+
     async def async_step_jointspace(self, user_input=None):
         """Configure an HTTPS/Digest JointSpace Ambilight source."""
         if user_input is not None:
             self._tv = dict(user_input)
+            try:
+                await async_validate_jointspace(
+                    async_get_clientsession(self.hass), self._tv[CONF_TV_HOST],
+                    self._tv[CONF_TV_USERNAME], self._tv[CONF_TV_PASSWORD],
+                    api_version=self._tv[CONF_TV_API_VERSION], port=self._tv[CONF_TV_PORT],
+                    verify_ssl=self._tv[CONF_TV_VERIFY_SSL],
+                )
+            except aiohttp.ClientResponseError as err:
+                return self.async_show_form(step_id="jointspace", data_schema=self._jointspace_schema(), errors={"base": "invalid_auth" if err.status in (401, 403) else "cannot_connect"})
+            except aiohttp.ClientConnectorCertificateError:
+                return self.async_show_form(step_id="jointspace", data_schema=self._jointspace_schema(), errors={"base": "tls_error"})
+            except asyncio.TimeoutError:
+                return self.async_show_form(step_id="jointspace", data_schema=self._jointspace_schema(), errors={"base": "timeout"})
+            except (aiohttp.ClientConnectionError, OSError):
+                return self.async_show_form(step_id="jointspace", data_schema=self._jointspace_schema(), errors={"base": "cannot_connect"})
+            except ValueError:
+                return self.async_show_form(step_id="jointspace", data_schema=self._jointspace_schema(), errors={"base": "invalid_topology"})
+            except Exception:
+                _LOGGER.debug("JointSpace validation failed", exc_info=True)
+                return self.async_show_form(step_id="jointspace", data_schema=self._jointspace_schema(), errors={"base": "unknown"})
             if self._backend == BACKEND_HUE:
-                return await self.async_step_hue_host()
+                return await self.async_step_hue_bridge()
             return self._create_entry()
-        return self.async_show_form(
-            step_id="jointspace",
-            data_schema=vol.Schema({
+        return self.async_show_form(step_id="jointspace", data_schema=self._jointspace_schema())
+
+    def _jointspace_schema(self):
+        return vol.Schema({
                 vol.Required(CONF_TV_HOST): TextSelector(),
                 vol.Required(CONF_TV_USERNAME): TextSelector(),
                 vol.Required(CONF_TV_PASSWORD): TextSelector(),
                 vol.Optional(CONF_TV_API_VERSION, default=DEFAULT_TV_API_VERSION): vol.Coerce(int),
                 vol.Optional(CONF_TV_PORT, default=DEFAULT_TV_PORT): vol.Coerce(int),
                 vol.Optional(CONF_TV_VERIFY_SSL, default=False): BooleanSelector(),
-            }),
-        )
+            })
 
     async def async_step_hue_host(self, user_input=None):
         """Collect the physical bridge host; pairing remains explicitly user initiated."""
@@ -203,6 +254,8 @@ class HueEntertainmentConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):  # t
     async def async_step_hue_pair(self, user_input=None):
         """Pair with the physical Hue Bridge after the link button has been pressed."""
         errors: dict[str, str] = {}
+        if user_input is not None and user_input.get("skip_hue_pairing"):
+            return self._create_entry()
         if user_input is not None:
             try:
                 from hue_entertainment import HueEntertainmentAPI
@@ -212,17 +265,19 @@ class HueEntertainmentConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):  # t
                     self._hue_areas = await api.get_entertainment_areas()
                 finally:
                     await api.close()
-            except TimeoutError:
-                errors["base"] = "hue_pairing_failed"
+            except TimeoutError as err:
+                errors["base"] = "link_button_not_pressed" if "button" in str(err).lower() else "bridge_unreachable"
             except Exception:  # noqa: BLE001 - errors are intentionally credential-free
                 _LOGGER.debug("Physical Hue Bridge pairing failed", exc_info=True)
-                errors["base"] = "hue_unreachable"
+                errors["base"] = "unknown"
             else:
                 if not self._hue_areas:
                     errors["base"] = "no_entertainment_areas"
                 else:
                     return await self.async_step_hue_area()
-        return self.async_show_form(step_id="hue_pair", data_schema=vol.Schema({}), errors=errors)
+        return self.async_show_form(step_id="hue_pair", data_schema=vol.Schema({
+            vol.Optional("skip_hue_pairing", default=False): BooleanSelector(),
+        }), errors=errors)
 
     async def async_step_hue_area(self, user_input=None):
         """Select the real area's native channel layout for the virtual bridge."""
@@ -352,11 +407,12 @@ class HueEntertainmentConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):  # t
             CONF_LIGHTS: self._lights,
             CONF_BRIDGE_ID: self._bridge_id,
             "initial_users": initial_users,
+            CONF_OUTPUT_CONFIGURED: bool(self._backend != BACKEND_HUE or self._hue_credentials),
         }
         if self._input_mode == INPUT_PHILIPS_JOINTSPACE:
             data.update(self._tv)
             data[CONF_TV_CHANNEL_MAPPINGS] = self._tv_channel_mappings
-        if self._backend == BACKEND_HUE:
+        if self._backend == BACKEND_HUE and self._hue_credentials:
             area = next(area for area in self._hue_areas if area.id == self._hue_area_id)
             data.update({
                 CONF_HUE_HOST: self._hue_host,

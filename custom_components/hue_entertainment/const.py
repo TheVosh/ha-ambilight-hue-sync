@@ -32,6 +32,7 @@ CONF_REVERSE_RIGHT = "reverse_right"
 CONF_REVERSE_TOP = "reverse_top"
 CONF_REVERSE_BOTTOM = "reverse_bottom"
 CONF_TV_CHANNEL_MAPPINGS = "tv_channel_mappings"
+CONF_OUTPUT_CONFIGURED = "output_configured"
 
 INPUT_LEGACY_HUESTREAM = "legacy_huestream"
 INPUT_PHILIPS_JOINTSPACE = "philips_jointspace"
