@@ -13,9 +13,12 @@
         "description": "Choisissez les lumières à inclure dans l'espace de divertissement.",
         "data": {
           "lights": "Lumières",
-          "output_backend": "Output backend"
+          "output_backend": "Output backend",
+          "input_mode": "Mode d’entrée TV"
         }
       },
+      "jointspace": {"title": "Téléviseur Philips", "description": "Saisissez les identifiants de l’API HTTPS JointSpace.", "data": {"tv_host": "Hôte TV", "tv_username": "Nom d’utilisateur", "tv_password": "Mot de passe", "tv_api_version": "Version API", "tv_port": "Port", "tv_verify_ssl": "Vérifier le certificat TLS"}},
+      "jointspace_mapping": {"title": "Mapper le canal Hue", "description": "{name} (canal {channel_id}, position Hue {position}) : choisissez sa position relative au téléviseur.", "data": {"tv_mapping": "Mappage TV"}},
       "hue_host": {
         "title": "Philips Hue Bridge",
         "description": "Enter the local IP address or hostname of your physical Hue Bridge.",
@@ -91,7 +94,8 @@
       "not_paired": {
         "title": "Délai d'association dépassé",
         "description": "Votre téléviseur ne s'est pas associé dans le temps imparti. Vous pouvez réessayer depuis le menu de configuration."
-      }
+      },
+      "jointspace_mapping_options": {"title": "Mapper le canal Hue", "description": "{name} (canal {channel_id}, position Hue {position}) : choisissez sa position relative au téléviseur.", "data": {"tv_mapping": "Mappage TV"}}
     },
     "progress": {
       "waiting_for_tv": "En attente de l'association de votre téléviseur…"
@@ -110,6 +114,7 @@
         "hue_bridge": "Philips Hue Bridge"
       }
     },
+    "input_mode": {"options": {"legacy_huestream": "Association Ambilight+Hue historique", "philips_jointspace": "API Ambilight Philips JointSpace"}},
     "http_mode": {
       "options": {
         "auto": "Automatique (recommandé)",

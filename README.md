@@ -69,6 +69,14 @@ flowchart LR
   Hue --> Area[Selected Entertainment Area]
 ```
 
+**Mode C — Philips JointSpace** supports newer TVs, including the Philips OLED909,
+which no longer provide the legacy Ambilight+Hue pairing screen. Select *Philips
+JointSpace Ambilight API*, provide the TV's Digest-auth HTTPS credentials, then select
+the physical Hue Entertainment Area. The integration polls
+`/6/ambilight/measured` (not `/processed`, which can be all-zero on newer TVs), derives
+the TV-edge layout from `/6/ambilight/topology`, and maps each Hue channel to its nearest
+measured zone. JointSpace is HTTP polling, so its default is a conservative 10 Hz.
+
 - **Zero-config pairing** — config flow walks you through light selection and TV pairing
 - **Adaptive rate control** — round-robin drain loop with per-light coalescing ensures the Zigbee radio is never overloaded
 - **Dynamic transitions** — fade duration automatically matches the update interval for smooth colour changes

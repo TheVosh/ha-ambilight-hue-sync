@@ -33,6 +33,10 @@ from .const import (
     CONF_HUE_CLIENT_KEY,
     CONF_HUE_AREA_ID,
     CONF_HUE_AREA_CHANNELS,
+    CONF_INPUT_MODE, CONF_TV_HOST, CONF_TV_USERNAME, CONF_TV_PASSWORD, CONF_TV_API_VERSION,
+    CONF_TV_PORT, CONF_TV_VERIFY_SSL, INPUT_LEGACY_HUESTREAM, INPUT_PHILIPS_JOINTSPACE,
+    DEFAULT_INPUT_MODE, DEFAULT_TV_API_VERSION, DEFAULT_TV_PORT,
+    CONF_TV_CHANNEL_MAPPINGS, TV_RELATIVE_POSITIONS,
     BACKEND_HOME_ASSISTANT,
     BACKEND_HUE,
     DEFAULT_OUTPUT_BACKEND,
@@ -90,10 +94,14 @@ class HueEntertainmentConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):  # t
     def __init__(self) -> None:
         self._lights: list[str] = []
         self._backend = DEFAULT_OUTPUT_BACKEND
+        self._input_mode = DEFAULT_INPUT_MODE
+        self._tv: dict = {}
         self._hue_host = ""
         self._hue_credentials: dict[str, str] = {}
         self._hue_areas: list = []
         self._hue_area_id = ""
+        self._tv_channel_mappings: dict[str, str] = {}
+        self._mapping_index = 0
         self._bridge_id = ""
         self._paired = False
         self._pairing_task: asyncio.Task | None = None
@@ -126,9 +134,12 @@ class HueEntertainmentConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):  # t
             await self.async_set_unique_id(DOMAIN)
             self._abort_if_unique_id_configured()
             self._backend = user_input.get(CONF_OUTPUT_BACKEND, DEFAULT_OUTPUT_BACKEND)
+            self._input_mode = user_input.get(CONF_INPUT_MODE, DEFAULT_INPUT_MODE)
             self._lights = user_input.get(CONF_LIGHTS, [])
             raw = uuid.uuid4().hex[:12].upper()
             self._bridge_id = raw[:6] + "FFFE" + raw[6:]
+            if self._input_mode == INPUT_PHILIPS_JOINTSPACE:
+                return await self.async_step_jointspace()
             if self._backend == BACKEND_HUE:
                 return await self.async_step_hue_host()
             return await self.async_step_pre_pairing()
@@ -137,6 +148,9 @@ class HueEntertainmentConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):  # t
             step_id="user",
             data_schema=vol.Schema(
                 {
+                    vol.Required(CONF_INPUT_MODE, default=DEFAULT_INPUT_MODE): SelectSelector(
+                        SelectSelectorConfig(options=[INPUT_LEGACY_HUESTREAM, INPUT_PHILIPS_JOINTSPACE], translation_key=CONF_INPUT_MODE, mode=SelectSelectorMode.DROPDOWN)
+                    ),
                     vol.Required(CONF_OUTPUT_BACKEND, default=DEFAULT_OUTPUT_BACKEND): SelectSelector(
                         SelectSelectorConfig(
                             options=[BACKEND_HOME_ASSISTANT, BACKEND_HUE],
@@ -149,6 +163,25 @@ class HueEntertainmentConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):  # t
                     ),
                 }
             ),
+        )
+
+    async def async_step_jointspace(self, user_input=None):
+        """Configure an HTTPS/Digest JointSpace Ambilight source."""
+        if user_input is not None:
+            self._tv = dict(user_input)
+            if self._backend == BACKEND_HUE:
+                return await self.async_step_hue_host()
+            return self._create_entry()
+        return self.async_show_form(
+            step_id="jointspace",
+            data_schema=vol.Schema({
+                vol.Required(CONF_TV_HOST): TextSelector(),
+                vol.Required(CONF_TV_USERNAME): TextSelector(),
+                vol.Required(CONF_TV_PASSWORD): TextSelector(),
+                vol.Optional(CONF_TV_API_VERSION, default=DEFAULT_TV_API_VERSION): vol.Coerce(int),
+                vol.Optional(CONF_TV_PORT, default=DEFAULT_TV_PORT): vol.Coerce(int),
+                vol.Optional(CONF_TV_VERIFY_SSL, default=False): BooleanSelector(),
+            }),
         )
 
     async def async_step_hue_host(self, user_input=None):
@@ -195,6 +228,9 @@ class HueEntertainmentConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):  # t
         """Select the real area's native channel layout for the virtual bridge."""
         if user_input is not None:
             self._hue_area_id = user_input[CONF_HUE_AREA_ID]
+            if self._input_mode == INPUT_PHILIPS_JOINTSPACE:
+                self._mapping_index = 0
+                return await self.async_step_jointspace_mapping()
             return await self.async_step_pre_pairing()
         return self.async_show_form(
             step_id="hue_area",
@@ -204,6 +240,29 @@ class HueEntertainmentConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):  # t
                         options=[{"value": area.id, "label": area.name} for area in self._hue_areas],
                         mode=SelectSelectorMode.DROPDOWN,
                     )
+                )
+            }),
+        )
+
+    async def async_step_jointspace_mapping(self, user_input=None):
+        """Collect an explicit TV-relative mapping for each Hue area channel."""
+        area = next(area for area in self._hue_areas if area.id == self._hue_area_id)
+        if user_input is not None:
+            channel = area.channels[self._mapping_index]
+            self._tv_channel_mappings[str(self._mapping_index + 1)] = user_input["tv_mapping"]
+            self._mapping_index += 1
+        if self._mapping_index >= len(area.channels):
+            return self._create_entry()
+        channel = area.channels[self._mapping_index]
+        return self.async_show_form(
+            step_id="jointspace_mapping",
+            description_placeholders={
+                "name": channel.name, "channel_id": str(channel.channel_id),
+                "position": "x={:.2f}, y={:.2f}, z={:.2f}".format(*channel.position),
+            },
+            data_schema=vol.Schema({
+                vol.Required("tv_mapping", default="auto"): SelectSelector(
+                    SelectSelectorConfig(options=list(TV_RELATIVE_POSITIONS), mode=SelectSelectorMode.DROPDOWN)
                 )
             }),
         )
@@ -288,11 +347,15 @@ class HueEntertainmentConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):  # t
     def _create_entry(self):
         initial_users = dict(self._temp_user_store.users) if self._temp_user_store else {}
         data = {
+            CONF_INPUT_MODE: self._input_mode,
             CONF_OUTPUT_BACKEND: self._backend,
             CONF_LIGHTS: self._lights,
             CONF_BRIDGE_ID: self._bridge_id,
             "initial_users": initial_users,
         }
+        if self._input_mode == INPUT_PHILIPS_JOINTSPACE:
+            data.update(self._tv)
+            data[CONF_TV_CHANNEL_MAPPINGS] = self._tv_channel_mappings
         if self._backend == BACKEND_HUE:
             area = next(area for area in self._hue_areas if area.id == self._hue_area_id)
             data.update({
@@ -301,8 +364,8 @@ class HueEntertainmentConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):  # t
                 CONF_HUE_CLIENT_KEY: self._hue_credentials["clientkey"],
                 CONF_HUE_AREA_ID: area.id,
                 CONF_HUE_AREA_CHANNELS: [
-                    {"channel_id": channel.channel_id, "name": channel.name, "position": list(channel.position)}
-                    for channel in area.channels
+                    {"channel_id": channel.channel_id, "name": channel.name, "position": list(channel.position), "tv_mapping": self._tv_channel_mappings.get(str(index), "auto")}
+                    for index, channel in enumerate(area.channels, 1)
                 ],
             })
         return self.async_create_entry(
@@ -323,6 +386,9 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
         self._hue_host: str = ""
         self._hue_area_id: str = ""
         self._hue_channels: list[dict] = []
+        self._input_mode: str = DEFAULT_INPUT_MODE
+        self._tv_channel_mappings: dict[str, str] = {}
+        self._mapping_index = 0
         self._paired = False
         self._pairing_task: asyncio.Task | None = None
 
@@ -332,6 +398,9 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
         if user_input is not None:
             self._lights = user_input[CONF_LIGHTS]
             self._backend = user_input.get(CONF_OUTPUT_BACKEND, DEFAULT_OUTPUT_BACKEND)
+            self._input_mode = self.config_entry.options.get(
+                CONF_INPUT_MODE, self.config_entry.data.get(CONF_INPUT_MODE, DEFAULT_INPUT_MODE)
+            )
             self._http_mode = user_input.get(CONF_HTTP_MODE, DEFAULT_HTTP_MODE)
             raw_ip = (user_input.get(CONF_BIND_IP) or "").strip()
             if raw_ip and not _is_ipv4(raw_ip):
@@ -422,6 +491,9 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                     _LOGGER.debug("Could not load physical Hue Entertainment Areas", exc_info=True)
                     errors["base"] = "hue_unreachable"
                 else:
+                    if self._input_mode == INPUT_PHILIPS_JOINTSPACE:
+                        self._mapping_index = 0
+                        return await self.async_step_jointspace_mapping_options()
                     return self.async_create_entry(title="", data=self._options())
 
         if not self._hue_host:
@@ -457,6 +529,29 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
             errors=errors,
         )
 
+    async def async_step_jointspace_mapping_options(self, user_input=None):
+        """Edit stored per-channel manual mappings without recreating the entry."""
+        channels = self._hue_channels or self.config_entry.options.get(
+            CONF_HUE_AREA_CHANNELS, self.config_entry.data.get(CONF_HUE_AREA_CHANNELS, [])
+        )
+        if user_input is not None:
+            self._tv_channel_mappings[str(self._mapping_index + 1)] = user_input["tv_mapping"]
+            self._mapping_index += 1
+        if self._mapping_index >= len(channels):
+            return self.async_create_entry(title="", data=self._options())
+        channel = channels[self._mapping_index]
+        defaults = self.config_entry.options.get(
+            CONF_TV_CHANNEL_MAPPINGS, self.config_entry.data.get(CONF_TV_CHANNEL_MAPPINGS, {})
+        )
+        return self.async_show_form(
+            step_id="jointspace_mapping_options",
+            description_placeholders={"name": channel.get("name", "Channel"),
+                "channel_id": str(channel.get("channel_id", "")),
+                "position": "x={:.2f}, y={:.2f}, z={:.2f}".format(*channel.get("position", (0, 0, 0)))},
+            data_schema=vol.Schema({vol.Required("tv_mapping", default=defaults.get(str(self._mapping_index + 1), channel.get("tv_mapping", "auto"))): SelectSelector(
+                SelectSelectorConfig(options=list(TV_RELATIVE_POSITIONS), mode=SelectSelectorMode.DROPDOWN))}),
+        )
+
     def _options(self) -> dict:
         options = {
             CONF_LIGHTS: self._lights,
@@ -470,6 +565,8 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
             options[CONF_HUE_HOST] = self._hue_host
             options[CONF_HUE_AREA_ID] = self._hue_area_id
             options[CONF_HUE_AREA_CHANNELS] = self._hue_channels
+        if self._input_mode == INPUT_PHILIPS_JOINTSPACE:
+            options[CONF_TV_CHANNEL_MAPPINGS] = self._tv_channel_mappings
         return options
 
     async def async_step_pairing(self, user_input=None):

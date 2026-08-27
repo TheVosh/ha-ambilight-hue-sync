@@ -18,6 +18,33 @@ CONF_HUE_AREA_CHANNELS = "hue_area_channels"
 CONF_STREAM_FPS = "stream_fps"
 CONF_BRIGHTNESS_MULTIPLIER = "brightness_multiplier"
 CONF_SATURATION_MULTIPLIER = "saturation_multiplier"
+CONF_INPUT_MODE = "input_mode"
+CONF_TV_HOST = "tv_host"
+CONF_TV_USERNAME = "tv_username"
+CONF_TV_PASSWORD = "tv_password"
+CONF_TV_API_VERSION = "tv_api_version"
+CONF_TV_PORT = "tv_port"
+CONF_TV_VERIFY_SSL = "tv_verify_ssl"
+CONF_TV_POLL_FPS = "tv_poll_fps"
+CONF_TV_INACTIVITY_TIMEOUT = "tv_inactivity_timeout"
+CONF_REVERSE_LEFT = "reverse_left"
+CONF_REVERSE_RIGHT = "reverse_right"
+CONF_REVERSE_TOP = "reverse_top"
+CONF_REVERSE_BOTTOM = "reverse_bottom"
+CONF_TV_CHANNEL_MAPPINGS = "tv_channel_mappings"
+
+INPUT_LEGACY_HUESTREAM = "legacy_huestream"
+INPUT_PHILIPS_JOINTSPACE = "philips_jointspace"
+DEFAULT_INPUT_MODE = INPUT_LEGACY_HUESTREAM
+DEFAULT_TV_API_VERSION = 6
+DEFAULT_TV_PORT = 1926
+DEFAULT_TV_POLL_FPS = 10
+DEFAULT_TV_INACTIVITY_TIMEOUT = 5.0
+
+TV_RELATIVE_POSITIONS = (
+    "auto", "top", "bottom", "left_top", "left_middle", "left_bottom",
+    "right_top", "right_middle", "right_bottom",
+)
 
 BACKEND_HOME_ASSISTANT = "home_assistant"
 BACKEND_HUE = "hue_bridge"

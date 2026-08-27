@@ -19,6 +19,7 @@ from homeassistant.exceptions import ConfigEntryNotReady
 from homeassistant.helpers.dispatcher import async_dispatcher_send
 from homeassistant.helpers.network import get_url
 from homeassistant.helpers.storage import Store
+from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.util.network import is_loopback
 
 from .config_flow import mac_from_bridge_id
@@ -38,6 +39,11 @@ from .const import (
     CONF_STREAM_FPS,
     CONF_BRIGHTNESS_MULTIPLIER,
     CONF_SATURATION_MULTIPLIER,
+    CONF_INPUT_MODE, CONF_TV_HOST, CONF_TV_USERNAME, CONF_TV_PASSWORD, CONF_TV_API_VERSION,
+    CONF_TV_PORT, CONF_TV_VERIFY_SSL, CONF_TV_POLL_FPS, CONF_REVERSE_LEFT, CONF_REVERSE_RIGHT,
+    CONF_REVERSE_TOP, CONF_REVERSE_BOTTOM, INPUT_PHILIPS_JOINTSPACE, DEFAULT_INPUT_MODE,
+    DEFAULT_TV_API_VERSION, DEFAULT_TV_PORT, DEFAULT_TV_POLL_FPS, CONF_TV_CHANNEL_MAPPINGS,
+    CONF_TV_INACTIVITY_TIMEOUT, DEFAULT_TV_INACTIVITY_TIMEOUT,
     BACKEND_HUE,
     DEFAULT_OUTPUT_BACKEND,
     DEFAULT_STREAM_FPS,
@@ -54,6 +60,7 @@ from .dtls_psk import DTLSPSKServer
 from .entertainment import EntertainmentEngine, FrameMailbox, LightMapping
 from .entertainment import parse_huestream_frame
 from .backends import EntertainmentOutputBackend, HomeAssistantLightBackend, HueEntertainmentBackend
+from .jointspace import PhilipsJointSpaceSource
 from .ha_http import async_get_http_host, resolve_use_ha_http
 from .hue_api import HueAPIServer
 from .user_store import UserStore
@@ -76,6 +83,7 @@ class HueEntertainmentData:
     user_store: UserStore
     mailbox: FrameMailbox
     cancel_watchdog: Callable[[], None]
+    jointspace_source: PhilipsJointSpaceSource | None = None
 
 
 type HueEntertainmentConfigEntry = ConfigEntry[HueEntertainmentData]
@@ -86,6 +94,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: HueEntertainmentConfigEn
     backend_name = entry.options.get(
         CONF_OUTPUT_BACKEND, entry.data.get(CONF_OUTPUT_BACKEND, DEFAULT_OUTPUT_BACKEND)
     )
+    input_mode = entry.options.get(CONF_INPUT_MODE, entry.data.get(CONF_INPUT_MODE, DEFAULT_INPUT_MODE))
     light_entities: list[str] = entry.options.get(CONF_LIGHTS, entry.data.get(CONF_LIGHTS, []))
     area_channels: list[dict] = entry.options.get(
         CONF_HUE_AREA_CHANNELS, entry.data.get(CONF_HUE_AREA_CHANNELS, [])
@@ -177,6 +186,50 @@ async def async_setup_entry(hass: HomeAssistant, entry: HueEntertainmentConfigEn
         index: tuple(channel.get("position", (0.0, 0.0, 0.0)))
         for index, channel in enumerate(area_channels, 1)
     }
+
+    jointspace_source: PhilipsJointSpaceSource | None = None
+    jointspace_backend_started = False
+    async def _start_jointspace_backend() -> None:
+        nonlocal jointspace_backend_started
+        if jointspace_backend_started:
+            return
+        jointspace_backend_started = True
+        try:
+            await backend.async_start()
+        except Exception:
+            jointspace_backend_started = False
+            _LOGGER.debug("JointSpace output backend is temporarily unavailable", exc_info=True)
+
+    def _jointspace_frame(colors) -> None:
+        hass.async_create_task(_start_jointspace_backend())
+        backend.send_frame(colors, 0)
+
+    if input_mode == INPUT_PHILIPS_JOINTSPACE:
+        reversed_edges = {
+            edge for edge, option in (("left", CONF_REVERSE_LEFT), ("right", CONF_REVERSE_RIGHT),
+                                      ("top", CONF_REVERSE_TOP), ("bottom", CONF_REVERSE_BOTTOM))
+            if entry.options.get(option, entry.data.get(option, False))
+        }
+        jointspace_source = PhilipsJointSpaceSource(
+            async_get_clientsession(hass),
+            entry.options.get(CONF_TV_HOST, entry.data.get(CONF_TV_HOST, "")),
+            entry.options.get(CONF_TV_USERNAME, entry.data.get(CONF_TV_USERNAME, "")),
+            entry.options.get(CONF_TV_PASSWORD, entry.data.get(CONF_TV_PASSWORD, "")),
+            positions, _jointspace_frame,
+            api_version=int(entry.options.get(CONF_TV_API_VERSION, DEFAULT_TV_API_VERSION)),
+            port=int(entry.options.get(CONF_TV_PORT, DEFAULT_TV_PORT)),
+            fps=int(entry.options.get(CONF_TV_POLL_FPS, DEFAULT_TV_POLL_FPS)),
+            verify_ssl=bool(entry.options.get(CONF_TV_VERIFY_SSL, False)),
+            reversed_edges=reversed_edges,
+            manual_mappings={
+                index: entry.options.get(CONF_TV_CHANNEL_MAPPINGS, entry.data.get(CONF_TV_CHANNEL_MAPPINGS, {})).get(str(index), channel.get("tv_mapping", "auto"))
+                for index, channel in enumerate(area_channels, 1)
+            },
+        )
+        jointspace_source.set_inactivity_callback(
+            backend.async_stop,
+            float(entry.options.get(CONF_TV_INACTIVITY_TIMEOUT, entry.data.get(CONF_TV_INACTIVITY_TIMEOUT, DEFAULT_TV_INACTIVITY_TIMEOUT))),
+        )
     api_server = HueAPIServer(
         bridge_id=bridge_id,
         mac=mac,
@@ -292,6 +345,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: HueEntertainmentConfigEn
         user_store=user_store,
         mailbox=mailbox,
         cancel_watchdog=_cancel_watchdog,
+        jointspace_source=jointspace_source,
     )
 
     async def _async_start(_event: Event | None = None) -> None:
@@ -307,6 +361,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: HueEntertainmentConfigEn
                 f"Cannot bind Hue bridge ports (http={http_port}, dtls={ent_port}): {err}"
             ) from err
         await discovery.async_start()
+        if jointspace_source is not None:
+            try:
+                await jointspace_source.async_start()
+                _LOGGER.info("JointSpace Ambilight source started")
+            except Exception:
+                _LOGGER.warning("JointSpace Ambilight source is unavailable; it will retry on reload", exc_info=True)
         _LOGGER.info(
             "Hue Entertainment Bridge started: bridge_id=%s, http=%s:%d, dtls=:%d, lights=%d, users=%d",
             bridge_id,
@@ -326,6 +386,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: HueEntertainmentConfigEn
         await dtls_server.async_stop()
         await api_server.async_stop()
         await discovery.async_stop()
+        if jointspace_source is not None:
+            await jointspace_source.async_close()
         await backend.async_close()
         _LOGGER.info("Hue Entertainment Bridge stopped")
 
@@ -378,6 +440,8 @@ async def async_unload_entry(hass: HomeAssistant, entry: HueEntertainmentConfigE
     await data.dtls_server.async_stop()
     await data.api_server.async_stop()
     await data.discovery.async_stop()
+    if data.jointspace_source is not None:
+        await data.jointspace_source.async_close()
     await data.backend.async_close()
     return unload_ok
 

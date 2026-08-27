@@ -13,9 +13,12 @@
         "description": "Choose Home Assistant lights or a physical Philips Hue Bridge. Home Assistant lights are used by default for existing installations.",
         "data": {
           "lights": "Lights",
-          "output_backend": "Output backend"
+          "output_backend": "Output backend",
+          "input_mode": "TV input mode"
         }
       },
+      "jointspace": {"title": "Philips TV", "description": "Enter the JointSpace HTTPS API credentials.", "data": {"tv_host": "TV host", "tv_username": "Username", "tv_password": "Password", "tv_api_version": "API version", "tv_port": "Port", "tv_verify_ssl": "Verify TLS certificate"}},
+      "jointspace_mapping": {"title": "Map Hue channel", "description": "{name} (channel {channel_id}, Hue position {position}): choose its TV-relative location.", "data": {"tv_mapping": "TV mapping"}},
       "hue_host": {
         "title": "Philips Hue Bridge",
         "description": "Enter the local IP address or hostname of your physical Hue Bridge.",
@@ -91,7 +94,8 @@
       "not_paired": {
         "title": "Pairing timed out",
         "description": "Your TV did not pair within 60 seconds. You can try again from Configure."
-      }
+      },
+      "jointspace_mapping_options": {"title": "Map Hue channel", "description": "{name} (channel {channel_id}, Hue position {position}): choose its TV-relative location.", "data": {"tv_mapping": "TV mapping"}}
     },
     "progress": {
       "waiting_for_tv": "Waiting for your TV to pair\u2026"
@@ -110,6 +114,7 @@
         "hue_bridge": "Philips Hue Bridge"
       }
     },
+    "input_mode": {"options": {"legacy_huestream": "Legacy Ambilight+Hue pairing", "philips_jointspace": "Philips JointSpace Ambilight API"}},
     "http_mode": {
       "options": {
         "auto": "Automatic (recommended)",

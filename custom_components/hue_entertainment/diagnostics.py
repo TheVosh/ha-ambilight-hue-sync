@@ -10,7 +10,7 @@ from homeassistant.core import HomeAssistant
 if TYPE_CHECKING:
     from . import HueEntertainmentConfigEntry
 
-TO_REDACT = {"clientkey", "initial_users", "hue_app_key", "hue_client_key"}
+TO_REDACT = {"clientkey", "initial_users", "hue_app_key", "hue_client_key", "tv_username", "tv_password"}
 
 
 async def async_get_config_entry_diagnostics(
@@ -35,6 +35,7 @@ async def async_get_config_entry_diagnostics(
         "engine": data.engine.stats,
         "output_backend": getattr(data.backend, "stats", {"type": type(data.backend).__name__}),
         "dtls": {"frames_coalesced_in_mailbox": data.mailbox.coalesced},
+        "jointspace": data.jointspace_source.stats if data.jointspace_source else None,
     }
 
 

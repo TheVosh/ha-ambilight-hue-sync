@@ -8,6 +8,7 @@ testpaths = [
     "tests/test_user_store.py",
     "tests/test_e2e.py",
     "tests/test_integration.py",
+    "tests/test_jointspace.py",
     "tests/test_translations.py",
 ]
 
