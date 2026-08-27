@@ -14,6 +14,7 @@
         "data": {
           "lights": "Lights",
           "output_backend": "Output backend",
+          "setup_hue": "Set up Philips Hue Bridge",
           "input_mode": "TV input mode"
         }
       },
@@ -96,6 +97,10 @@
           "http_mode": "Where the Hue REST API is served. Automatic: uses Home Assistant's own web server when it listens on port 80 without HTTPS (Settings \u2192 System \u2192 Network, HA 2026.8+), otherwise a standalone server on port 80. Change only if the automatic choice is wrong."
         }
       },
+      "hue_setup_bridge": {"title": "Set up Philips Hue Bridge", "description": "Choose an existing Home Assistant Hue Bridge or enter another bridge.", "data": {"ha_hue_bridge": "Hue Bridge"}},
+      "hue_setup_host": {"title": "Philips Hue Bridge", "data": {"hue_host": "Hue Bridge"}},
+      "hue_setup_pair": {"title": "Authorize Hue Entertainment", "description": "Press the physical link button on your Hue Bridge, then select Submit."},
+      "hue_setup_area": {"title": "Entertainment Area", "data": {"hue_area_id": "Entertainment Area"}},
       "pairing": {
         "title": "Pair your TV",
         "description": "Open Ambilight Sync settings on your TV now. The pairing window is open for 60 seconds."

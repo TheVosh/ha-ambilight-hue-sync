@@ -14,6 +14,7 @@
         "data": {
           "lights": "Lumières",
           "output_backend": "Output backend",
+          "setup_hue": "Configurer le pont Philips Hue",
           "input_mode": "Mode d’entrée TV"
         }
       },
@@ -96,6 +97,10 @@
           "http_mode": "Où l'API REST Hue est servie. Automatique : utilise le serveur web de Home Assistant lorsqu'il écoute sur le port 80 sans HTTPS (Paramètres → Système → Réseau, HA 2026.8+), sinon un serveur autonome sur le port 80. Ne changer que si le choix automatique est incorrect."
         }
       },
+      "hue_setup_bridge": {"title": "Configurer le pont Philips Hue", "description": "Choisissez un pont Hue Home Assistant existant ou saisissez un autre pont.", "data": {"ha_hue_bridge": "Pont Hue"}},
+      "hue_setup_host": {"title": "Pont Philips Hue", "data": {"hue_host": "Pont Hue"}},
+      "hue_setup_pair": {"title": "Autoriser Hue Entertainment", "description": "Appuyez sur le bouton physique du pont Hue, puis sélectionnez Soumettre."},
+      "hue_setup_area": {"title": "Zone de divertissement", "data": {"hue_area_id": "Zone de divertissement"}},
       "pairing": {
         "title": "Associer votre téléviseur",
         "description": "Ouvrez les paramètres Ambilight Sync de votre téléviseur maintenant. La fenêtre d'association reste ouverte pendant 60 secondes."

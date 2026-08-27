@@ -442,6 +442,8 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
         self._hue_host: str = ""
         self._hue_area_id: str = ""
         self._hue_channels: list[dict] = []
+        self._hue_credentials: dict[str, str] = {}
+        self._hue_areas: list = []
         self._input_mode: str = DEFAULT_INPUT_MODE
         self._tv_channel_mappings: dict[str, str] = {}
         self._mapping_index = 0
@@ -450,6 +452,23 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
 
     async def async_step_init(self, user_input=None):
         """Show lights selection and optional re-pair toggle."""
+        input_mode = self.config_entry.options.get(
+            CONF_INPUT_MODE, self.config_entry.data.get(CONF_INPUT_MODE, DEFAULT_INPUT_MODE)
+        )
+        backend = self.config_entry.options.get(
+            CONF_OUTPUT_BACKEND, self.config_entry.data.get(CONF_OUTPUT_BACKEND, DEFAULT_OUTPUT_BACKEND)
+        )
+        configured = self.config_entry.options.get(
+            CONF_OUTPUT_CONFIGURED, self.config_entry.data.get(CONF_OUTPUT_CONFIGURED, True)
+        )
+        if input_mode == INPUT_PHILIPS_JOINTSPACE and backend == BACKEND_HUE:
+            if user_input and user_input.get("setup_hue"):
+                return await self.async_step_hue_setup_bridge()
+            return self.async_show_form(
+                step_id="init",
+                data_schema=vol.Schema({vol.Optional("setup_hue", default=False): BooleanSelector()}),
+                description_placeholders={"hue_status": "Connected" if configured else "Not configured"},
+            )
         errors: dict[str, str] = {}
         if user_input is not None:
             self._lights = user_input[CONF_LIGHTS]
@@ -519,6 +538,72 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
             ),
             errors=errors,
         )
+
+    async def async_step_hue_setup_bridge(self, user_input=None):
+        """Continue a deferred physical Hue setup without touching TV settings."""
+        bridges = async_known_hue_bridges(self.hass)
+        if len(bridges) == 1:
+            self._hue_host = bridges[0].host
+            return await self.async_step_hue_setup_pair()
+        if user_input is not None:
+            selected = user_input["ha_hue_bridge"]
+            if selected == "manual":
+                return await self.async_step_hue_setup_host()
+            self._hue_host = next(b.host for b in bridges if b.entry_id == selected)
+            return await self.async_step_hue_setup_pair()
+        if not bridges:
+            return await self.async_step_hue_setup_host()
+        return self.async_show_form(step_id="hue_setup_bridge", data_schema=vol.Schema({
+            vol.Required("ha_hue_bridge"): SelectSelector(SelectSelectorConfig(options=[
+                {"value": b.entry_id, "label": f"{b.name} ({b.host})"} for b in bridges
+            ] + [{"value": "manual", "label": "Enter a different Hue Bridge"}], mode=SelectSelectorMode.DROPDOWN))
+        }))
+
+    async def async_step_hue_setup_host(self, user_input=None):
+        if user_input is not None:
+            self._hue_host = str(user_input[CONF_HUE_HOST]).strip()
+            if self._hue_host:
+                return await self.async_step_hue_setup_pair()
+        return self.async_show_form(step_id="hue_setup_host", data_schema=vol.Schema({vol.Required(CONF_HUE_HOST, default=self._hue_host): TextSelector()}))
+
+    async def async_step_hue_setup_pair(self, user_input=None):
+        errors = {}
+        if user_input is not None:
+            try:
+                from hue_entertainment import HueEntertainmentAPI
+                api = HueEntertainmentAPI(self._hue_host)
+                try:
+                    self._hue_credentials = await api.pair("ha_hue_entertainment#home_assistant")
+                    self._hue_areas = await api.get_entertainment_areas()
+                finally:
+                    await api.close()
+                if not self._hue_areas:
+                    errors["base"] = "no_entertainment_areas"
+                else:
+                    return await self.async_step_hue_setup_area()
+            except TimeoutError as err:
+                errors["base"] = "link_button_not_pressed" if "button" in str(err).lower() else "bridge_unreachable"
+            except Exception:
+                _LOGGER.debug("Deferred Hue pairing failed", exc_info=True)
+                errors["base"] = "unknown"
+        return self.async_show_form(step_id="hue_setup_pair", data_schema=vol.Schema({}), errors=errors)
+
+    async def async_step_hue_setup_area(self, user_input=None):
+        if user_input is not None:
+            area = next(area for area in self._hue_areas if area.id == user_input[CONF_HUE_AREA_ID])
+            options = dict(self.config_entry.options)
+            options.update({
+                CONF_HUE_HOST: self._hue_host, CONF_HUE_APP_KEY: self._hue_credentials["username"],
+                CONF_HUE_CLIENT_KEY: self._hue_credentials["clientkey"], CONF_HUE_AREA_ID: area.id,
+                CONF_HUE_AREA_CHANNELS: [{"channel_id": c.channel_id, "name": c.name, "position": list(c.position), "tv_mapping": "auto"} for c in area.channels],
+                CONF_OUTPUT_CONFIGURED: True,
+            })
+            return self.async_create_entry(title="", data=options)
+        return self.async_show_form(step_id="hue_setup_area", data_schema=vol.Schema({
+            vol.Required(CONF_HUE_AREA_ID): SelectSelector(SelectSelectorConfig(options=[
+                {"value": area.id, "label": area.name} for area in self._hue_areas
+            ], mode=SelectSelectorMode.DROPDOWN))
+        }))
 
     async def async_step_hue_options(self, user_input=None):
         """Select another physical area without recreating the virtual bridge."""
