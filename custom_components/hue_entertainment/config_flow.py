@@ -227,12 +227,12 @@ class HueEntertainmentConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):  # t
 
     def _jointspace_schema(self):
         return vol.Schema({
-                vol.Required(CONF_TV_HOST): TextSelector(),
-                vol.Required(CONF_TV_USERNAME): TextSelector(),
-                vol.Required(CONF_TV_PASSWORD): TextSelector(),
-                vol.Optional(CONF_TV_API_VERSION, default=DEFAULT_TV_API_VERSION): vol.Coerce(int),
-                vol.Optional(CONF_TV_PORT, default=DEFAULT_TV_PORT): vol.Coerce(int),
-                vol.Optional(CONF_TV_VERIFY_SSL, default=False): BooleanSelector(),
+                vol.Required(CONF_TV_HOST, default=self._tv.get(CONF_TV_HOST, "")): TextSelector(),
+                vol.Required(CONF_TV_USERNAME, default=self._tv.get(CONF_TV_USERNAME, "")): TextSelector(),
+                vol.Required(CONF_TV_PASSWORD, default=self._tv.get(CONF_TV_PASSWORD, "")): TextSelector(),
+                vol.Optional(CONF_TV_API_VERSION, default=self._tv.get(CONF_TV_API_VERSION, DEFAULT_TV_API_VERSION)): vol.Coerce(int),
+                vol.Optional(CONF_TV_PORT, default=self._tv.get(CONF_TV_PORT, DEFAULT_TV_PORT)): vol.Coerce(int),
+                vol.Optional(CONF_TV_VERIFY_SSL, default=self._tv.get(CONF_TV_VERIFY_SSL, False)): BooleanSelector(),
             })
 
     async def async_step_hue_host(self, user_input=None):

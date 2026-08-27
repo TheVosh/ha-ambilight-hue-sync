@@ -28,6 +28,14 @@ from custom_components.hue_entertainment.const import (  # noqa: E402
     CONF_ENTERTAINMENT_PORT,
     CONF_LIGHTS,
     CONF_PAIR_NOW,
+    CONF_INPUT_MODE,
+    CONF_TV_HOST,
+    CONF_TV_USERNAME,
+    CONF_TV_PASSWORD,
+    CONF_TV_API_VERSION,
+    CONF_TV_PORT,
+    CONF_TV_VERIFY_SSL,
+    INPUT_PHILIPS_JOINTSPACE,
     DOMAIN,
 )
 
@@ -233,6 +241,28 @@ async def test_config_flow_aborts_when_port_in_use(hass: HomeAssistant) -> None:
         result = await hass.config_entries.flow.async_configure(result["flow_id"], {})
     assert result["type"] is FlowResultType.ABORT
     assert result["reason"] == "port_in_use"
+
+
+async def test_jointspace_validation_retains_latest_form_values(hass: HomeAssistant) -> None:
+    """A retry must not make the user paste TV credentials again."""
+    result = await hass.config_entries.flow.async_init(DOMAIN, context={"source": "user"})
+    result = await hass.config_entries.flow.async_configure(result["flow_id"], {
+        CONF_LIGHTS: LIGHTS, CONF_INPUT_MODE: INPUT_PHILIPS_JOINTSPACE,
+    })
+    assert result["step_id"] == "jointspace"
+    values = {
+        CONF_TV_HOST: "test-tv", CONF_TV_USERNAME: "test-user", CONF_TV_PASSWORD: "test-pass",
+        CONF_TV_API_VERSION: 6, CONF_TV_PORT: 1926, CONF_TV_VERIFY_SSL: False,
+    }
+    with patch(
+        "custom_components.hue_entertainment.config_flow.async_validate_jointspace",
+        side_effect=asyncio.TimeoutError,
+    ):
+        result = await hass.config_entries.flow.async_configure(result["flow_id"], values)
+    assert result["type"] is FlowResultType.FORM
+    assert result["errors"] == {"base": "timeout"}
+    defaults = result["data_schema"]({})
+    assert {key: defaults[key] for key in values} == values
 
 
 async def test_options_flow_validates_bind_ip(hass: HomeAssistant) -> None:

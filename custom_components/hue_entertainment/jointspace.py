@@ -30,8 +30,11 @@ async def async_validate_jointspace(
         session, host, username, password, {}, lambda _colors: None,
         api_version=api_version, port=port, verify_ssl=verify_ssl,
     )
-    await source._async_topology()  # validation deliberately shares production request code
-    return source.stats["topology"]
+    try:
+        await source._async_topology()  # validation deliberately shares production request code
+        return source.stats["topology"]
+    finally:
+        await source.async_close()
 
 
 @dataclass(frozen=True)
@@ -140,11 +143,14 @@ class PhilipsJointSpaceSource(AmbilightSource):
                  channel_positions: dict[int, tuple[float, float, float]], frame_callback,
                  *, api_version: int = 6, port: int = 1926, fps: int = 10,
                  verify_ssl: bool = False, reversed_edges: set[str] = frozenset(), manual_mappings: dict[int, str] | None = None) -> None:
-        self._session, self._host, self._username, self._password = session, host, username, password
+        # Digest middleware must be attached when a ClientSession is created.
+        # Keep this private session scoped to this TV; the HA shared session is
+        # deliberately not modified and cannot leak Digest credentials elsewhere.
+        self._session: aiohttp.ClientSession | None = None
+        self._hass_session, self._host, self._username, self._password = session, host, username, password
         self._channel_positions, self._frame_callback = channel_positions, frame_callback
         self._api_version, self._port, self._fps, self._verify_ssl = api_version, port, max(1, fps), verify_ssl
         self._reversed_edges = reversed_edges
-        self._auth = aiohttp.DigestAuth(username, password)
         self._manual_mappings = manual_mappings or {}
         self._mapping_logged = False
         self._inactivity_callback = None
@@ -181,7 +187,11 @@ class PhilipsJointSpaceSource(AmbilightSource):
             except asyncio.CancelledError: pass
             self._task = None
 
-    async def async_close(self) -> None: await self.async_stop()
+    async def async_close(self) -> None:
+        await self.async_stop()
+        if self._session is not None:
+            await self._session.close()
+            self._session = None
 
     def set_inactivity_callback(self, callback, timeout: float) -> None:
         """Stop a direct output session when the TV stops yielding valid frames."""
@@ -191,8 +201,11 @@ class PhilipsJointSpaceSource(AmbilightSource):
         self._topology = parse_topology(await self._get("ambilight/topology"))
 
     async def _get(self, resource: str) -> dict[str, Any]:
+        if self._session is None:
+            middleware = aiohttp.DigestAuthMiddleware(self._username, self._password)
+            self._session = aiohttp.ClientSession(middlewares=(middleware,))
         url = f"https://{self._host}:{self._port}/{self._api_version}/{resource}"
-        async with self._session.get(url, auth=self._auth, ssl=self._verify_ssl, timeout=aiohttp.ClientTimeout(total=3)) as response:
+        async with self._session.get(url, ssl=self._verify_ssl, timeout=aiohttp.ClientTimeout(total=3)) as response:
             response.raise_for_status()
             data = await response.json()
             if not isinstance(data, dict): raise ValueError("JointSpace response is not an object")
