@@ -20,6 +20,6 @@
   "loggers": [
     "custom_components.hue_entertainment.dtls_psk.server"
   ],
-  "requirements": [],
-  "version": "0.2.0"
+  "requirements": ["hue-entertainment==0.1.2"],
+  "version": "0.3.0"
 }

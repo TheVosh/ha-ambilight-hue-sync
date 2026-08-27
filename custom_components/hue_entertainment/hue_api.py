@@ -47,6 +47,7 @@ class HueAPIServer:
         http_port: int,
         channel_count: int,
         light_entities: list[str],
+        channel_positions: dict[int, tuple[float, float, float]] | None = None,
         user_store: UserStore | None = None,
         bind_ip: str | None = None,
         http_host: Any = None,
@@ -57,6 +58,7 @@ class HueAPIServer:
         self._http_port = http_port
         self._channel_count = channel_count
         self._light_entities = light_entities
+        self._channel_positions = channel_positions or {}
         self._bind_ip = bind_ip
         # ha_http.HueHttpHost: when set, requests arrive through Home Assistant's
         # own HTTP server instead of a standalone aiohttp server on http_port.
@@ -301,8 +303,11 @@ class HueAPIServer:
         light_ids = [str(i) for i in range(1, len(self._light_entities) + 1)]
         locations = {}
         for i in range(1, len(self._light_entities) + 1):
-            x = -1.0 + (2.0 * (i - 1) / max(len(self._light_entities) - 1, 1))
-            locations[str(i)] = [round(x, 4), 1.0, 0.0]
+            position = self._channel_positions.get(i)
+            if position is None:
+                x = -1.0 + (2.0 * (i - 1) / max(len(self._light_entities) - 1, 1))
+                position = (round(x, 4), 1.0, 0.0)
+            locations[str(i)] = list(position)
         return {
             "1": {
                 "name": "TV Entertainment",

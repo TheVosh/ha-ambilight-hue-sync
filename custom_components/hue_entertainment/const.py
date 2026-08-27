@@ -9,6 +9,20 @@ CONF_BRIDGE_ID = "bridge_id"
 CONF_PAIR_NOW = "pair_now"
 CONF_BIND_IP = "bind_ip"
 CONF_HTTP_MODE = "http_mode"
+CONF_OUTPUT_BACKEND = "output_backend"
+CONF_HUE_HOST = "hue_host"
+CONF_HUE_APP_KEY = "hue_app_key"
+CONF_HUE_CLIENT_KEY = "hue_client_key"
+CONF_HUE_AREA_ID = "hue_area_id"
+CONF_HUE_AREA_CHANNELS = "hue_area_channels"
+CONF_STREAM_FPS = "stream_fps"
+CONF_BRIGHTNESS_MULTIPLIER = "brightness_multiplier"
+CONF_SATURATION_MULTIPLIER = "saturation_multiplier"
+
+BACKEND_HOME_ASSISTANT = "home_assistant"
+BACKEND_HUE = "hue_bridge"
+DEFAULT_OUTPUT_BACKEND = BACKEND_HOME_ASSISTANT
+DEFAULT_STREAM_FPS = 50
 
 # Where the Hue REST API is served from
 HTTP_MODE_AUTO = "auto"  # HA's own server if it listens on :80 without TLS, else standalone

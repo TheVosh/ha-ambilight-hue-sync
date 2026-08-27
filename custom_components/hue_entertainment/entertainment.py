@@ -293,7 +293,10 @@ class EntertainmentEngine:
 
         self._log_fps(now)
 
-        # Write freshest colour into per-light slots (drain loop sends them)
+        self.handle_channels(channels, color_space)
+
+    def handle_channels(self, channels: list[ChannelColor], color_space: int) -> None:
+        """Accept already-normalized channels from the shared frame router."""
         for channel in channels:
             self._schedule_update(channel, color_space)
 

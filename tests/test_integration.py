@@ -80,7 +80,9 @@ async def test_setup_creates_device_and_sensor_and_unloads_cleanly(hass: HomeAss
     entry = await _setup(hass, _entry())
     data = entry.runtime_data
 
-    device = dr.async_get(hass).async_get_device(identifiers={(DOMAIN, BRIDGE_ID)})
+    device = dr.async_get(hass).async_get_device_by_identifier(
+        (DOMAIN, BRIDGE_ID), entry.entry_id
+    )
     assert device is not None and device.model == const.BRIDGE_MODEL_ID
 
     entity_id = er.async_get(hass).async_get_entity_id(

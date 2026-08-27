@@ -9,11 +9,26 @@
   "config": {
     "step": {
       "user": {
-        "title": "Select lights",
-        "description": "Choose which lights will be included in the entertainment area.",
+        "title": "Choose output",
+        "description": "Choose Home Assistant lights or a physical Philips Hue Bridge. Home Assistant lights are used by default for existing installations.",
         "data": {
-          "lights": "Lights"
+          "lights": "Lights",
+          "output_backend": "Output backend"
         }
+      },
+      "hue_host": {
+        "title": "Philips Hue Bridge",
+        "description": "Enter the local IP address or hostname of your physical Hue Bridge.",
+        "data": {"hue_host": "Hue Bridge"}
+      },
+      "hue_pair": {
+        "title": "Pair Hue Bridge",
+        "description": "Press the link button on your Hue Bridge, then select Submit. Waiting for Hue Bridge authorization."
+      },
+      "hue_area": {
+        "title": "Entertainment Area",
+        "description": "Choose the physical Entertainment Area to expose to your TV.",
+        "data": {"hue_area_id": "Entertainment Area"}
       },
       "pre_pairing": {
         "title": "Ready to pair",
@@ -27,6 +42,11 @@
         "title": "Pairing timed out",
         "description": "Your TV did not pair within 60 seconds. The bridge will start without a paired TV — you can pair later from the integration's Configure menu."
       }
+      ,"hue_options": {
+        "title": "Philips Hue Bridge",
+        "description": "Change the physical Hue Bridge or Entertainment Area.",
+        "data": {"hue_host": "Hue Bridge", "hue_area_id": "Entertainment Area"}
+      }
     },
     "progress": {
       "waiting_for_tv": "Waiting for your TV to pair…"
@@ -34,6 +54,12 @@
     "abort": {
       "already_configured": "Hue Entertainment Bridge is already configured.",
       "port_in_use": "Port 80 is already in use on the Home Assistant host, so the bridge cannot start. See the README for port-conflict options, then try again."
+    },
+    "error": {
+      "invalid_host": "Enter a Hue Bridge host.",
+      "hue_pairing_failed": "Hue Bridge pairing failed. Check that its link button was pressed.",
+      "hue_unreachable": "Hue Bridge unreachable.",
+      "no_entertainment_areas": "No Entertainment Areas found."
     }
   },
   "options": {
@@ -42,6 +68,7 @@
         "title": "Hue Entertainment Bridge",
         "description": "Update the entertainment area lights or pair your TV.",
         "data": {
+          "output_backend": "Output backend",
           "lights": "Lights",
           "pair_now": "Pair TV now",
           "bind_ip": "Bind IP address",
@@ -66,10 +93,19 @@
       "waiting_for_tv": "Waiting for your TV to pair…"
     },
     "error": {
-      "invalid_ip": "Not a valid IPv4 address"
+      "invalid_ip": "Not a valid IPv4 address",
+      "invalid_host": "Enter a Hue Bridge host.",
+      "hue_unreachable": "Hue Bridge unreachable.",
+      "no_entertainment_areas": "No Entertainment Areas found."
     }
   },
   "selector": {
+    "output_backend": {
+      "options": {
+        "home_assistant": "Home Assistant / ZHA lights",
+        "hue_bridge": "Philips Hue Bridge"
+      }
+    },
     "http_mode": {
       "options": {
         "auto": "Automatic (recommended)",

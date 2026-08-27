@@ -29,6 +29,18 @@ from .const import (
     CONF_ENTERTAINMENT_PORT,
     CONF_HTTP_MODE,
     CONF_LIGHTS,
+    CONF_OUTPUT_BACKEND,
+    CONF_HUE_HOST,
+    CONF_HUE_APP_KEY,
+    CONF_HUE_CLIENT_KEY,
+    CONF_HUE_AREA_ID,
+    CONF_HUE_AREA_CHANNELS,
+    CONF_STREAM_FPS,
+    CONF_BRIGHTNESS_MULTIPLIER,
+    CONF_SATURATION_MULTIPLIER,
+    BACKEND_HUE,
+    DEFAULT_OUTPUT_BACKEND,
+    DEFAULT_STREAM_FPS,
     DEFAULT_API_PORT,
     DEFAULT_ENTERTAINMENT_PORT,
     DEFAULT_HTTP_MODE,
@@ -40,6 +52,8 @@ from .const import (
 from .discovery import HueBridgeDiscovery
 from .dtls_psk import DTLSPSKServer
 from .entertainment import EntertainmentEngine, FrameMailbox, LightMapping
+from .entertainment import parse_huestream_frame
+from .backends import EntertainmentOutputBackend, HomeAssistantLightBackend, HueEntertainmentBackend
 from .ha_http import async_get_http_host, resolve_use_ha_http
 from .hue_api import HueAPIServer
 from .user_store import UserStore
@@ -58,6 +72,7 @@ class HueEntertainmentData:
     dtls_server: DTLSPSKServer
     discovery: HueBridgeDiscovery
     engine: EntertainmentEngine
+    backend: EntertainmentOutputBackend
     user_store: UserStore
     mailbox: FrameMailbox
     cancel_watchdog: Callable[[], None]
@@ -68,7 +83,18 @@ type HueEntertainmentConfigEntry = ConfigEntry[HueEntertainmentData]
 
 async def async_setup_entry(hass: HomeAssistant, entry: HueEntertainmentConfigEntry) -> bool:
     """Set up Hue Entertainment Bridge from a config entry."""
+    backend_name = entry.options.get(
+        CONF_OUTPUT_BACKEND, entry.data.get(CONF_OUTPUT_BACKEND, DEFAULT_OUTPUT_BACKEND)
+    )
     light_entities: list[str] = entry.options.get(CONF_LIGHTS, entry.data.get(CONF_LIGHTS, []))
+    area_channels: list[dict] = entry.options.get(
+        CONF_HUE_AREA_CHANNELS, entry.data.get(CONF_HUE_AREA_CHANNELS, [])
+    )
+    if backend_name == BACKEND_HUE:
+        # The physical area's channel layout is persisted at configuration time.
+        # It becomes the virtual bridge layout exposed to the TV, so virtual IDs
+        # deterministically map by index to native physical channel IDs.
+        light_entities = [str(channel.get("name", f"Channel {index}")) for index, channel in enumerate(area_channels, 1)]
 
     bridge_id: str = entry.data[CONF_BRIDGE_ID]
     mac = mac_from_bridge_id(bridge_id)
@@ -114,6 +140,24 @@ async def async_setup_entry(hass: HomeAssistant, entry: HueEntertainmentConfigEn
     ]
 
     engine = EntertainmentEngine(hass, mappings)
+    if backend_name == BACKEND_HUE:
+        channel_map = {
+            index: int(channel["channel_id"])
+            for index, channel in enumerate(area_channels, 1)
+            if "channel_id" in channel
+        }
+        backend: EntertainmentOutputBackend = HueEntertainmentBackend(
+            entry.options.get(CONF_HUE_HOST, entry.data.get(CONF_HUE_HOST, "")),
+            entry.options.get(CONF_HUE_APP_KEY, entry.data.get(CONF_HUE_APP_KEY, "")),
+            entry.options.get(CONF_HUE_CLIENT_KEY, entry.data.get(CONF_HUE_CLIENT_KEY, "")),
+            entry.options.get(CONF_HUE_AREA_ID, entry.data.get(CONF_HUE_AREA_ID, "")),
+            channel_map,
+            fps_cap=int(entry.options.get(CONF_STREAM_FPS, DEFAULT_STREAM_FPS)),
+            brightness_multiplier=float(entry.options.get(CONF_BRIGHTNESS_MULTIPLIER, 1.0)),
+            saturation_multiplier=float(entry.options.get(CONF_SATURATION_MULTIPLIER, 1.0)),
+        )
+    else:
+        backend = HomeAssistantLightBackend(engine)
 
     # HA-idiomatic persistent user store
     ha_store: Store[dict[str, dict]] = Store(hass, version=1, key=f"{DOMAIN}.users")
@@ -129,6 +173,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: HueEntertainmentConfigEn
         await user_store.async_save()
 
     # API server (HTTP only — TV never uses HTTPS)
+    positions = {
+        index: tuple(channel.get("position", (0.0, 0.0, 0.0)))
+        for index, channel in enumerate(area_channels, 1)
+    }
     api_server = HueAPIServer(
         bridge_id=bridge_id,
         mac=mac,
@@ -136,6 +184,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: HueEntertainmentConfigEn
         http_port=http_port,
         channel_count=len(light_entities),
         light_entities=light_entities,
+        channel_positions=positions,
         user_store=user_store,
         bind_ip=bind_ip,
         http_host=http_host,
@@ -152,7 +201,17 @@ async def async_setup_entry(hass: HomeAssistant, entry: HueEntertainmentConfigEn
     # (enable separately for handshake-level debug).
     # Frames are handed over through a single-slot mailbox (freshest wins) so a
     # stalled loop never accumulates a backlog of stale frames.
-    mailbox = FrameMailbox(hass.loop, engine.handle_frame)
+    last_frame_time = 0.0
+    def _handle_frame(frame: bytes) -> None:
+        nonlocal last_frame_time
+        parsed = parse_huestream_frame(frame)
+        if parsed is None:
+            return
+        last_frame_time = time.monotonic()
+        _version, color_space, channels = parsed
+        backend.send_frame(channels, color_space)
+
+    mailbox = FrameMailbox(hass.loop, _handle_frame)
     dtls_server = DTLSPSKServer(
         host=bind_ip or "0.0.0.0",
         port=ent_port,
@@ -180,17 +239,17 @@ async def async_setup_entry(hass: HomeAssistant, entry: HueEntertainmentConfigEn
 
     async def _frame_watchdog() -> None:
         try:
-            while engine.is_active:
+            while api_server.entertainment_active:
                 await asyncio.sleep(FRAME_WATCHDOG_INTERVAL)
-                if not engine.is_active:
+                if not api_server.entertainment_active:
                     break
-                elapsed = time.monotonic() - engine.last_frame_time
+                elapsed = time.monotonic() - last_frame_time
                 if elapsed > FRAME_TIMEOUT:
                     _LOGGER.warning(
                         "No entertainment frames for %.1f seconds, auto-stopping", elapsed
                     )
                     api_server.clear_entertainment()
-                    await engine.async_restore_lights()
+                    await backend.async_stop()
                     async_dispatcher_send(hass, SIGNAL_ENTERTAINMENT_CHANGED)
                     break
         except asyncio.CancelledError:
@@ -199,7 +258,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: HueEntertainmentConfigEn
     async def _on_entertainment_start(username: str) -> None:
         nonlocal watchdog_task
         _LOGGER.info("Entertainment started by %s", username)
-        await engine.async_snapshot_lights()
+        try:
+            await backend.async_start()
+        except Exception:
+            # TV side remains available; a later stream activation retries the physical bridge.
+            _LOGGER.warning("Output backend is not ready; retrying on the next TV stream")
         async_dispatcher_send(hass, SIGNAL_ENTERTAINMENT_CHANGED)
         if watchdog_task is None or watchdog_task.done():
             # Owned by the entry: cancelled automatically on unload
@@ -209,13 +272,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: HueEntertainmentConfigEn
 
     async def _on_entertainment_stop() -> None:
         _cancel_watchdog()
-        await engine.async_restore_lights()
+        await backend.async_stop()
         async_dispatcher_send(hass, SIGNAL_ENTERTAINMENT_CHANGED)
 
     api_server.set_entertainment_callbacks(_on_entertainment_start, _on_entertainment_stop)
     # TV "classic" mode (no DTLS stream): per-light REST commands follow the
     # same Zigbee-paced drain loop.
-    api_server.set_light_command_callback(engine.handle_light_command)
+    if isinstance(backend, HomeAssistantLightBackend):
+        api_server.set_light_command_callback(backend.handle_light_command)
 
     # Runtime objects for the platforms, the options flow and diagnostics
     entry.runtime_data = HueEntertainmentData(
@@ -224,6 +288,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: HueEntertainmentConfigEn
         dtls_server=dtls_server,
         discovery=discovery,
         engine=engine,
+        backend=backend,
         user_store=user_store,
         mailbox=mailbox,
         cancel_watchdog=_cancel_watchdog,
@@ -261,7 +326,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: HueEntertainmentConfigEn
         await dtls_server.async_stop()
         await api_server.async_stop()
         await discovery.async_stop()
-        await engine.async_restore_lights()
+        await backend.async_close()
         _LOGGER.info("Hue Entertainment Bridge stopped")
 
     if hass.state is CoreState.running:
@@ -313,7 +378,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: HueEntertainmentConfigE
     await data.dtls_server.async_stop()
     await data.api_server.async_stop()
     await data.discovery.async_stop()
-    await data.engine.async_restore_lights()
+    await data.backend.async_close()
     return unload_ok
 
 

@@ -27,6 +27,15 @@ from .const import (
     CONF_HTTP_MODE,
     CONF_LIGHTS,
     CONF_PAIR_NOW,
+    CONF_OUTPUT_BACKEND,
+    CONF_HUE_HOST,
+    CONF_HUE_APP_KEY,
+    CONF_HUE_CLIENT_KEY,
+    CONF_HUE_AREA_ID,
+    CONF_HUE_AREA_CHANNELS,
+    BACKEND_HOME_ASSISTANT,
+    BACKEND_HUE,
+    DEFAULT_OUTPUT_BACKEND,
     DEFAULT_API_PORT,
     DEFAULT_HTTP_MODE,
     DOMAIN,
@@ -80,6 +89,11 @@ class HueEntertainmentConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):  # t
 
     def __init__(self) -> None:
         self._lights: list[str] = []
+        self._backend = DEFAULT_OUTPUT_BACKEND
+        self._hue_host = ""
+        self._hue_credentials: dict[str, str] = {}
+        self._hue_areas: list = []
+        self._hue_area_id = ""
         self._bridge_id = ""
         self._paired = False
         self._pairing_task: asyncio.Task | None = None
@@ -107,24 +121,91 @@ class HueEntertainmentConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):  # t
         return OptionsFlowHandler()
 
     async def async_step_user(self, user_input=None):
-        """Step 1: select lights."""
+        """Choose the output destination before TV pairing."""
         if user_input is not None:
             await self.async_set_unique_id(DOMAIN)
             self._abort_if_unique_id_configured()
-            self._lights = user_input[CONF_LIGHTS]
+            self._backend = user_input.get(CONF_OUTPUT_BACKEND, DEFAULT_OUTPUT_BACKEND)
+            self._lights = user_input.get(CONF_LIGHTS, [])
             raw = uuid.uuid4().hex[:12].upper()
             self._bridge_id = raw[:6] + "FFFE" + raw[6:]
+            if self._backend == BACKEND_HUE:
+                return await self.async_step_hue_host()
             return await self.async_step_pre_pairing()
 
         return self.async_show_form(
             step_id="user",
             data_schema=vol.Schema(
                 {
-                    vol.Required(CONF_LIGHTS): EntitySelector(
+                    vol.Required(CONF_OUTPUT_BACKEND, default=DEFAULT_OUTPUT_BACKEND): SelectSelector(
+                        SelectSelectorConfig(
+                            options=[BACKEND_HOME_ASSISTANT, BACKEND_HUE],
+                            translation_key=CONF_OUTPUT_BACKEND,
+                            mode=SelectSelectorMode.DROPDOWN,
+                        )
+                    ),
+                    vol.Optional(CONF_LIGHTS, default=[]): EntitySelector(
                         EntitySelectorConfig(domain="light", multiple=True)
                     ),
                 }
             ),
+        )
+
+    async def async_step_hue_host(self, user_input=None):
+        """Collect the physical bridge host; pairing remains explicitly user initiated."""
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            host = str(user_input[CONF_HUE_HOST]).strip()
+            if not host:
+                errors[CONF_HUE_HOST] = "invalid_host"
+            else:
+                self._hue_host = host
+                return await self.async_step_hue_pair()
+        return self.async_show_form(
+            step_id="hue_host",
+            data_schema=vol.Schema({vol.Required(CONF_HUE_HOST, default=self._hue_host): TextSelector()}),
+            errors=errors,
+        )
+
+    async def async_step_hue_pair(self, user_input=None):
+        """Pair with the physical Hue Bridge after the link button has been pressed."""
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            try:
+                from hue_entertainment import HueEntertainmentAPI
+                api = HueEntertainmentAPI(self._hue_host)
+                try:
+                    self._hue_credentials = await api.pair("ha_hue_entertainment#home_assistant")
+                    self._hue_areas = await api.get_entertainment_areas()
+                finally:
+                    await api.close()
+            except TimeoutError:
+                errors["base"] = "hue_pairing_failed"
+            except Exception:  # noqa: BLE001 - errors are intentionally credential-free
+                _LOGGER.debug("Physical Hue Bridge pairing failed", exc_info=True)
+                errors["base"] = "hue_unreachable"
+            else:
+                if not self._hue_areas:
+                    errors["base"] = "no_entertainment_areas"
+                else:
+                    return await self.async_step_hue_area()
+        return self.async_show_form(step_id="hue_pair", data_schema=vol.Schema({}), errors=errors)
+
+    async def async_step_hue_area(self, user_input=None):
+        """Select the real area's native channel layout for the virtual bridge."""
+        if user_input is not None:
+            self._hue_area_id = user_input[CONF_HUE_AREA_ID]
+            return await self.async_step_pre_pairing()
+        return self.async_show_form(
+            step_id="hue_area",
+            data_schema=vol.Schema({
+                vol.Required(CONF_HUE_AREA_ID): SelectSelector(
+                    SelectSelectorConfig(
+                        options=[{"value": area.id, "label": area.name} for area in self._hue_areas],
+                        mode=SelectSelectorMode.DROPDOWN,
+                    )
+                )
+            }),
         )
 
     async def async_step_pre_pairing(self, user_input=None):
@@ -206,13 +287,27 @@ class HueEntertainmentConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):  # t
 
     def _create_entry(self):
         initial_users = dict(self._temp_user_store.users) if self._temp_user_store else {}
+        data = {
+            CONF_OUTPUT_BACKEND: self._backend,
+            CONF_LIGHTS: self._lights,
+            CONF_BRIDGE_ID: self._bridge_id,
+            "initial_users": initial_users,
+        }
+        if self._backend == BACKEND_HUE:
+            area = next(area for area in self._hue_areas if area.id == self._hue_area_id)
+            data.update({
+                CONF_HUE_HOST: self._hue_host,
+                CONF_HUE_APP_KEY: self._hue_credentials["username"],
+                CONF_HUE_CLIENT_KEY: self._hue_credentials["clientkey"],
+                CONF_HUE_AREA_ID: area.id,
+                CONF_HUE_AREA_CHANNELS: [
+                    {"channel_id": channel.channel_id, "name": channel.name, "position": list(channel.position)}
+                    for channel in area.channels
+                ],
+            })
         return self.async_create_entry(
             title="Hue Entertainment Bridge",
-            data={
-                CONF_LIGHTS: self._lights,
-                CONF_BRIDGE_ID: self._bridge_id,
-                "initial_users": initial_users,
-            },
+            data=data,
         )
 
 
@@ -224,6 +319,10 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
         self._lights: list[str] = []
         self._bind_ip: str | None = None
         self._http_mode: str = DEFAULT_HTTP_MODE
+        self._backend: str = DEFAULT_OUTPUT_BACKEND
+        self._hue_host: str = ""
+        self._hue_area_id: str = ""
+        self._hue_channels: list[dict] = []
         self._paired = False
         self._pairing_task: asyncio.Task | None = None
 
@@ -232,6 +331,7 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
         errors: dict[str, str] = {}
         if user_input is not None:
             self._lights = user_input[CONF_LIGHTS]
+            self._backend = user_input.get(CONF_OUTPUT_BACKEND, DEFAULT_OUTPUT_BACKEND)
             self._http_mode = user_input.get(CONF_HTTP_MODE, DEFAULT_HTTP_MODE)
             raw_ip = (user_input.get(CONF_BIND_IP) or "").strip()
             if raw_ip and not _is_ipv4(raw_ip):
@@ -240,6 +340,8 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                 self._bind_ip = raw_ip or None
                 if user_input.get(CONF_PAIR_NOW, False):
                     return await self.async_step_pairing()
+                if self._backend == BACKEND_HUE:
+                    return await self.async_step_hue_options()
                 return self.async_create_entry(title="", data=self._options())
 
         current_lights = self.config_entry.options.get(
@@ -254,15 +356,26 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
         current_mode = self.config_entry.options.get(
             CONF_HTTP_MODE, self.config_entry.data.get(CONF_HTTP_MODE, DEFAULT_HTTP_MODE)
         )
+        current_backend = self.config_entry.options.get(
+            CONF_OUTPUT_BACKEND, self.config_entry.data.get(CONF_OUTPUT_BACKEND, DEFAULT_OUTPUT_BACKEND)
+        )
         if user_input is not None:
             # Re-show what the user typed
             current_lights = user_input[CONF_LIGHTS]
             current_bind_ip = user_input.get(CONF_BIND_IP, "")
             current_mode = user_input.get(CONF_HTTP_MODE, current_mode)
+            current_backend = user_input.get(CONF_OUTPUT_BACKEND, current_backend)
         return self.async_show_form(
             step_id="init",
             data_schema=vol.Schema(
                 {
+                    vol.Required(CONF_OUTPUT_BACKEND, default=current_backend): SelectSelector(
+                        SelectSelectorConfig(
+                            options=[BACKEND_HOME_ASSISTANT, BACKEND_HUE],
+                            translation_key=CONF_OUTPUT_BACKEND,
+                            mode=SelectSelectorMode.DROPDOWN,
+                        )
+                    ),
                     vol.Required(CONF_LIGHTS, default=current_lights): EntitySelector(
                         EntitySelectorConfig(domain="light", multiple=True)
                     ),
@@ -282,12 +395,82 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
             errors=errors,
         )
 
+    async def async_step_hue_options(self, user_input=None):
+        """Select another physical area without recreating the virtual bridge."""
+        errors: dict[str, str] = {}
+        app_key = self.config_entry.data.get(CONF_HUE_APP_KEY, "")
+        if user_input is not None:
+            self._hue_host = str(user_input[CONF_HUE_HOST]).strip()
+            self._hue_area_id = user_input[CONF_HUE_AREA_ID]
+            if not self._hue_host:
+                errors[CONF_HUE_HOST] = "invalid_host"
+            else:
+                try:
+                    from hue_entertainment import HueEntertainmentAPI
+                    api = HueEntertainmentAPI(self._hue_host, app_key)
+                    try:
+                        areas = await api.get_entertainment_areas()
+                    finally:
+                        await api.close()
+                    area = next(area for area in areas if area.id == self._hue_area_id)
+                    self._hue_channels = [
+                        {"channel_id": channel.channel_id, "name": channel.name,
+                         "position": list(channel.position)}
+                        for channel in area.channels
+                    ]
+                except Exception:  # noqa: BLE001
+                    _LOGGER.debug("Could not load physical Hue Entertainment Areas", exc_info=True)
+                    errors["base"] = "hue_unreachable"
+                else:
+                    return self.async_create_entry(title="", data=self._options())
+
+        if not self._hue_host:
+            self._hue_host = self.config_entry.options.get(
+                CONF_HUE_HOST, self.config_entry.data.get(CONF_HUE_HOST, "")
+            )
+        try:
+            from hue_entertainment import HueEntertainmentAPI
+            api = HueEntertainmentAPI(self._hue_host, app_key)
+            try:
+                areas = await api.get_entertainment_areas()
+            finally:
+                await api.close()
+        except Exception:  # noqa: BLE001
+            areas = []
+            errors["base"] = "hue_unreachable"
+        if not areas:
+            errors.setdefault("base", "no_entertainment_areas")
+        current_area = self.config_entry.options.get(
+            CONF_HUE_AREA_ID, self.config_entry.data.get(CONF_HUE_AREA_ID, "")
+        )
+        return self.async_show_form(
+            step_id="hue_options",
+            data_schema=vol.Schema({
+                vol.Required(CONF_HUE_HOST, default=self._hue_host): TextSelector(),
+                vol.Required(CONF_HUE_AREA_ID, default=current_area): SelectSelector(
+                    SelectSelectorConfig(
+                        options=[{"value": area.id, "label": area.name} for area in areas],
+                        mode=SelectSelectorMode.DROPDOWN,
+                    )
+                ),
+            }),
+            errors=errors,
+        )
+
     def _options(self) -> dict:
-        return {
+        options = {
             CONF_LIGHTS: self._lights,
             CONF_BIND_IP: self._bind_ip,
             CONF_HTTP_MODE: self._http_mode,
         }
+        # Old config entries deliberately remain indistinguishable from their
+        # historic shape; absence means Home Assistant/ZHA output.
+        if self._backend != DEFAULT_OUTPUT_BACKEND:
+            options[CONF_OUTPUT_BACKEND] = self._backend
+            options[CONF_HUE_HOST] = self._hue_host
+            options[CONF_HUE_AREA_ID] = self._hue_area_id
+            options[CONF_HUE_AREA_CHANNELS] = self._hue_channels
+        return options
 
     async def async_step_pairing(self, user_input=None):
         """Open the link button and wait for the TV to pair."""

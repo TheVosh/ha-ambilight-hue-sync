@@ -6,7 +6,7 @@
 [![Release](https://img.shields.io/github/v/release/83noit/ha-hue-entertainment?sort=semver)](https://github.com/83noit/ha-hue-entertainment/releases)
 [![HACS Default](https://img.shields.io/badge/HACS-Default-41BDF5.svg)](https://github.com/hacs/default)
 
-A Home Assistant integration that emulates a Philips Hue Bridge's **entertainment mode**, allowing a Hue-compatible TV (Ambilight) to control Zigbee lights managed by [ZHA](https://www.home-assistant.io/integrations/zha/).
+A Home Assistant integration that emulates a Philips Hue Bridge's **entertainment mode** for an Ambilight TV. It can either drive Home Assistant lights (including [ZHA](https://www.home-assistant.io/integrations/zha/)) or forward the stream directly to a real Philips Hue Bridge.
 
 Your TV thinks it's talking to a real Hue Bridge. Your Zigbee bulbs change colour in sync with what's on screen.
 
@@ -46,6 +46,29 @@ The integration:
 
 ## Features
 
+### Output modes
+
+**Mode A — Home Assistant / ZHA lights** keeps the original behaviour: the TV sends
+HueStream to this virtual bridge and its adaptive, coalescing drain loop updates the
+selected HA light entities. It is the default for existing configuration entries.
+
+**Mode B — Philips Hue Bridge** is recommended when the lights belong to a physical
+Hue Bridge. The setup flow pairs with that bridge, lists its Entertainment Areas, and
+exposes the selected area's exact channels and 3-D positions to the TV. Incoming
+virtual channels are mapped one-to-one to the selected area's native channel IDs and
+sent over the Hue Entertainment DTLS stream. This avoids high-frequency
+`light.turn_on` calls entirely and supports native streaming rates (up to the chosen
+cap, 50 fps by default).
+
+```mermaid
+flowchart LR
+  TV[Ambilight TV] -->|mDNS + Hue v1| Virtual[HA virtual Hue Bridge]
+  TV -->|HueStream / DTLS UDP 2100| Virtual
+  Virtual -->|Mode A: coalesced HA services| HA[HA / ZHA lights]
+  Virtual -->|Mode B: native Hue Entertainment DTLS| Hue[Physical Hue Bridge]
+  Hue --> Area[Selected Entertainment Area]
+```
+
 - **Zero-config pairing** — config flow walks you through light selection and TV pairing
 - **Adaptive rate control** — round-robin drain loop with per-light coalescing ensures the Zigbee radio is never overloaded
 - **Dynamic transitions** — fade duration automatically matches the update interval for smooth colour changes
@@ -80,8 +103,10 @@ The integration:
 
 1. Go to **Settings > Devices & Services > Add Integration**
 2. Search for **Hue Entertainment Bridge**
-3. Select the Zigbee lights to include in the entertainment area
-4. The pairing wizard starts a 60-second window — trigger a Hue bridge search on your TV
+3. Choose **Home Assistant / ZHA lights** and select light entities, or choose
+   **Philips Hue Bridge**, enter its local address, press its link button, and select
+   an Entertainment Area
+4. The TV pairing wizard starts a 60-second window — trigger a Hue bridge search on your TV
 5. Once paired, the integration is ready
 
 ## Configuration
