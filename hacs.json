@@ -1,5 +1,5 @@
 {
-  "name": "Hue Entertainment Bridge",
+  "name": "Ambilight Hue Sync for Home Assistant",
   "homeassistant": "2024.11.0",
   "render_readme": true
 }

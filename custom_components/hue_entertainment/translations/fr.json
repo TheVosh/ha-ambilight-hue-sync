@@ -105,7 +105,7 @@
       "waiting_for_tv": "En attente de l'association de votre téléviseur…"
     },
     "abort": {
-      "already_configured": "Le pont de divertissement Hue (Hue Entertainment Bridge) est déjà configuré.",
+      "already_configured": "Ambilight Hue Sync est déjà configuré.",
       "port_in_use": "Le port 80 est déjà utilisé sur l'hôte Home Assistant, le pont ne peut pas démarrer. Voir le README pour les options de conflit de port, puis réessayer."
     },
     "error": {
@@ -130,7 +130,7 @@
   "options": {
     "step": {
       "init": {
-        "title": "Pont de divertissement Hue",
+        "title": "Ambilight Hue Sync",
         "description": "TV : {tv_host}\nPont Hue : {hue_status} ({hue_host})\nZone de divertissement : {area}\nCanaux : {channels}\n\nChoisissez ce que vous souhaitez gérer. Vos connexions enregistrées ne changent pas avant l’enregistrement d’une modification.",
         "data": {
           "management_action": "Que souhaitez-vous gérer ?",
@@ -197,7 +197,7 @@
   },
   "exceptions": {
     "no_bridge_loaded": {
-      "message": "Aucun pont de divertissement Hue n'est chargé."
+      "message": "Aucune intégration Ambilight Hue Sync n'est chargée."
     }
   }
 }
