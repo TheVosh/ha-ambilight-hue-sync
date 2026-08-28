@@ -2,87 +2,32 @@
 drain-loop hardening (try/finally around _drain_running, the _drain_running-not-
 Task.done() guard in _ensure_drain_task).
 
-Bootstraps entertainment.py the same hermetic way test_entertainment.py does
-(stubbed homeassistant.*, no real HA install) but with its own module
-instance — each test file in this repo loads entertainment.py fresh rather
-than sharing state across files.
+entertainment.py is loaded hermetically (no running HA) by tests/engine_harness.py,
+shared with test_entertainment.py; pause/release timers are recorded by its fake
+async_call_later and fired explicitly here.
 """
 
 from __future__ import annotations
 
 import asyncio
-import importlib.util
-import struct
-import sys
-from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-# ---------------------------------------------------------------------------
-# Bootstrap: mock homeassistant + load const/entertainment without HA install
-# ---------------------------------------------------------------------------
+from tests.engine_harness import (
+    EntertainmentEngine,
+    LightMapping,
+    scheduled_calls,
+    v2_channel,
+    v2_header,
+)
+from tests.engine_harness import (
+    const as _const,
+)
+from tests.engine_harness import (
+    ent as _ent,
+)
 
-for _mod_name in ["homeassistant", "homeassistant.core", "homeassistant.helpers"]:
-    if _mod_name not in sys.modules:
-        sys.modules[_mod_name] = MagicMock()
-_helpers_state = MagicMock()
-_helpers_state.async_reproduce_state = AsyncMock()
-sys.modules["homeassistant.helpers.state"] = _helpers_state
-
-sys.modules["homeassistant.core"].callback = lambda f: f
-
-
-class FakeCallLater:
-    """One scheduled call recorded by the fake async_call_later."""
-
-    def __init__(self, delay, action):
-        self.delay = delay
-        self.action = action
-        self.cancelled = False
-
-    def cancel(self):
-        self.cancelled = True
-
-    def fire(self):
-        return self.action(None)
-
-
-scheduled_calls: list[FakeCallLater] = []
-
-
-def _fake_async_call_later(hass, delay, action):
-    call = FakeCallLater(delay, action)
-    scheduled_calls.append(call)
-    return call.cancel
-
-
-_helpers_event = MagicMock()
-_helpers_event.async_call_later = _fake_async_call_later
-sys.modules["homeassistant.helpers.event"] = _helpers_event
-
-_base = Path(__file__).parent.parent / "custom_components" / "hue_entertainment"
-
-
-def _load(name: str, filename: str):
-    path = _base / filename
-    spec = importlib.util.spec_from_file_location(name, path)
-    mod = importlib.util.module_from_spec(spec)
-    sys.modules[name] = mod
-    spec.loader.exec_module(mod)
-    return mod
-
-
-_pkg_stub = MagicMock()
-_pkg_stub.__path__ = [str(_base)]
-_pkg_stub.__package__ = "hue_entertainment"
-sys.modules.setdefault("hue_entertainment", _pkg_stub)
-
-_const = _load("hue_entertainment.const_pr", "const.py")
-_ent = _load("hue_entertainment.entertainment_pr", "entertainment.py")
-
-EntertainmentEngine = _ent.EntertainmentEngine
-LightMapping = _ent.LightMapping
 DEFAULT_YIELD_SECONDS = _const.DEFAULT_YIELD_SECONDS
 
 
@@ -246,28 +191,8 @@ class TestPauseResume:
         assert scheduled_calls[0].cancelled is True  # first timer superseded
 
 
-def _v2_header(color_space: int = None) -> bytes:
-    """52-byte v2 header. Mirrors test_entertainment.py's own helper exactly —
-    duplicated rather than imported since each test file here loads
-    entertainment.py as its own separate module instance."""
-    cs = _const.COLOR_SPACE_RGB if color_space is None else color_space
-    return (
-        b"HueStream"
-        + bytes([0x02])  # api_version
-        + bytes([0x00])  # minor version
-        + bytes([0x00])  # seq
-        + b"\x00" * 2  # reserved
-        + bytes([cs])
-        + b"\x00" * (52 - 15)
-    )
-
-
-def _v2_channel(channel_id: int, r: int, g: int, b: int) -> bytes:
-    return bytes([channel_id]) + struct.pack(">HHH", r, g, b)
-
-
 def _make_v2_frame(channel_id: int = 0) -> bytes:
-    return _v2_header() + _v2_channel(channel_id, 30000, 30000, 30000)
+    return v2_header() + v2_channel(channel_id, 30000, 30000, 30000)
 
 
 # ---------------------------------------------------------------------------
@@ -403,3 +328,62 @@ class TestDrainLoopHardening:
         engine._ensure_drain_task()
 
         assert engine._drain_task is not fake_task  # a new task was started
+
+
+# ---------------------------------------------------------------------------
+# release in classic mode (no DTLS session to tear down)
+# ---------------------------------------------------------------------------
+
+
+class TestReleaseClassicMode:
+    @pytest.mark.asyncio
+    async def test_release_suppresses_classic_commands_and_shows_underlying_activity(self):
+        engine, _ = _make_live_engine(channels=1)
+        with patch.object(_ent, "CLASSIC_DRAIN_IDLE", 0.05):
+            engine.handle_light_command(0, {"on": True, "bri": 200})
+            await asyncio.sleep(0)
+            assert engine.status == "classic"
+            await engine.async_release(2)
+            assert engine.status == "releasing"
+            assert engine.status_attributes["underlying_activity"] == "classic"
+            engine.handle_light_command(0, {"bri": 10})
+            assert engine._mappings[0].dirty is False  # dropped
+            await asyncio.sleep(0.2)  # drain loop goes idle and exits
+        # Still releasing: the grace period, not the drain loop, bounds a release.
+        assert engine.status == "releasing"
+        assert engine.status_attributes["underlying_activity"] == "idle"
+
+    @pytest.mark.asyncio
+    async def test_grace_expiry_resolves_release_when_no_stream_is_active(self):
+        """Without a DTLS session there is nothing for the watchdog to tear
+        down, so the grace timer itself must resolve the release — otherwise
+        a classic-mode TV would leave the sensor stuck on `releasing`."""
+        notify = MagicMock()
+        engine, _ = _make_live_engine(channels=1, notify=notify)
+        with patch.object(_ent, "CLASSIC_DRAIN_IDLE", 0.05):
+            engine.handle_light_command(0, {"on": True})
+            await asyncio.sleep(0)
+            await engine.async_release(2)
+            await asyncio.sleep(0.2)  # drain loop idles out underneath the release
+        assert engine.status == "releasing"
+        notify.reset_mock()
+        scheduled_calls[-1].fire()
+        assert engine.status == "idle"
+        assert engine._releasing is False
+        assert engine._release_forcing is False
+        assert notify.called
+        # The next classic command drives the lights again
+        engine.handle_light_command(0, {"bri": 10})
+        assert engine.is_driving_lights is True
+        engine._drain_task.cancel()
+
+    @pytest.mark.asyncio
+    async def test_grace_expiry_forces_rather_than_resolves_while_streaming(self):
+        engine, _ = _make_live_engine(channels=1)
+        await engine.async_snapshot_lights()
+        await engine.async_release(2)
+        scheduled_calls[-1].fire()
+        assert engine.status == "releasing"
+        assert engine._release_forcing is True
+        await engine.async_restore_lights()
+        assert engine.status == "idle"

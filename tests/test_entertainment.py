@@ -3,89 +3,19 @@
 from __future__ import annotations
 
 import asyncio
-import importlib.util
 import struct
-import sys
-from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-# ---------------------------------------------------------------------------
-# Bootstrap: mock homeassistant + load const/entertainment without HA install
-# ---------------------------------------------------------------------------
+# entertainment.py is loaded hermetically (no running HA) by the shared
+# harness; the fakes for async_call_later / async_reproduce_state live on the
+# loaded module, so test_integration.py's real Home Assistant is untouched.
+from tests.engine_harness import EntertainmentEngine, LightMapping, scheduled_calls
+from tests.engine_harness import const as _const
+from tests.engine_harness import ent as _ent
 
-for _mod_name in ["homeassistant", "homeassistant.core", "homeassistant.helpers"]:
-    if _mod_name not in sys.modules:
-        sys.modules[_mod_name] = MagicMock()
-_helpers_state = MagicMock()
-_helpers_state.async_reproduce_state = AsyncMock()
-sys.modules["homeassistant.helpers.state"] = _helpers_state
-
-# `homeassistant.core.callback` is a decorator that must return the original
-# function unchanged — a bare MagicMock would instead replace the decorated
-# method with an auto-generated mock, silently breaking anything that later
-# calls it (e.g. async_call_later's scheduled action).
-sys.modules["homeassistant.core"].callback = lambda f: f
-
-# Fake async_call_later: records (delay, action, cancelled) instead of
-# scheduling real time, so tests fire pause/release timers deterministically
-# by calling the recorded action directly — see FakeCallLater below.
-_helpers_event = MagicMock()
-
-
-class FakeCallLater:
-    """One scheduled call recorded by the fake async_call_later."""
-
-    def __init__(self, delay, action):
-        self.delay = delay
-        self.action = action
-        self.cancelled = False
-
-    def cancel(self):
-        self.cancelled = True
-
-    def fire(self):
-        """Invoke the scheduled action as if its delay had elapsed."""
-        return self.action(None)
-
-
-scheduled_calls: list[FakeCallLater] = []
-
-
-def _fake_async_call_later(hass, delay, action):
-    call = FakeCallLater(delay, action)
-    scheduled_calls.append(call)
-    return call.cancel
-
-
-_helpers_event.async_call_later = _fake_async_call_later
-sys.modules["homeassistant.helpers.event"] = _helpers_event
-
-_base = Path(__file__).parent.parent / "custom_components" / "hue_entertainment"
-
-
-def _load(name: str, filename: str):
-    path = _base / filename
-    spec = importlib.util.spec_from_file_location(name, path)
-    mod = importlib.util.module_from_spec(spec)
-    sys.modules[name] = mod
-    spec.loader.exec_module(mod)
-    return mod
-
-
-# Register a stub package so relative imports in entertainment.py resolve
-_pkg_stub = MagicMock()
-_pkg_stub.__path__ = [str(_base)]
-_pkg_stub.__package__ = "hue_entertainment"
-sys.modules.setdefault("hue_entertainment", _pkg_stub)
-
-_const = _load("hue_entertainment.const", "const.py")
-_ent = _load("hue_entertainment.entertainment", "entertainment.py")
-
-EntertainmentEngine = _ent.EntertainmentEngine
 ChannelColor = _ent.ChannelColor
-LightMapping = _ent.LightMapping
 parse_huestream_frame = _ent.parse_huestream_frame
 _parse_v1_channels = _ent._parse_v1_channels
 _parse_v2_channels = _ent._parse_v2_channels
@@ -97,6 +27,14 @@ HUESTREAM_CHANNEL_SIZE = _const.HUESTREAM_CHANNEL_SIZE
 BRIGHTNESS_TOLERANCE = _const.BRIGHTNESS_TOLERANCE
 CIE_TOLERANCE = _const.CIE_TOLERANCE
 RESTORE_TRANSITION = _const.RESTORE_TRANSITION
+
+
+@pytest.fixture(autouse=True)
+def _clear_scheduled_calls():
+    scheduled_calls.clear()
+    yield
+    scheduled_calls.clear()
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -161,7 +99,7 @@ class _FakeTask:
         raise asyncio.CancelledError
 
 
-def _make_engine(channels: int = 2) -> tuple[EntertainmentEngine, MagicMock]:
+def _make_engine(channels: int = 2, notify=None) -> tuple[EntertainmentEngine, MagicMock]:
     """Return an engine wired to a mock hass and N light mappings."""
     hass = MagicMock()
 
@@ -173,7 +111,7 @@ def _make_engine(channels: int = 2) -> tuple[EntertainmentEngine, MagicMock]:
 
     hass.async_create_task = MagicMock(side_effect=_fake_create_task)
     mappings = [LightMapping(channel_id=i, entity_id=f"light.test_{i}") for i in range(channels)]
-    engine = EntertainmentEngine(hass, mappings)
+    engine = EntertainmentEngine(hass, mappings, notify=notify)
     return engine, hass
 
 
@@ -573,9 +511,9 @@ class TestParseHuestreamFrame:
 # ---------------------------------------------------------------------------
 
 
-def _make_async_engine(channels: int = 2) -> tuple[EntertainmentEngine, MagicMock]:
+def _make_async_engine(channels: int = 2, notify=None) -> tuple[EntertainmentEngine, MagicMock]:
     """Return an engine with a properly async-capable mock hass."""
-    engine, hass = _make_engine(channels)  # same task-swallowing hass
+    engine, hass = _make_engine(channels, notify=notify)  # same task-swallowing hass
     # states.get returns a fake State object for each entity
     hass.states = MagicMock()
     return engine, hass
@@ -675,6 +613,64 @@ class TestSnapshotRestore:
         with patch.object(_ent.time, "monotonic", return_value=t):
             engine.handle_frame(frame)
         assert engine.last_frame_time == t
+
+    @pytest.mark.asyncio
+    async def test_restore_notifies_before_reproduce_state_is_even_awaited(self):
+        """The sensor must flip off the instant `_active` does, not after restore completes."""
+        events: list[str] = []
+        notify = MagicMock(side_effect=lambda: events.append(f"notify(active={engine.is_active})"))
+        engine, hass = _make_async_engine(channels=1, notify=notify)
+        hass.states.get.return_value = MagicMock()
+        await engine.async_snapshot_lights()
+        events.clear()
+
+        async def slow_reproduce(*args, **kwargs):
+            events.append("reproduce_started")
+            await asyncio.sleep(0.05)
+            events.append("reproduce_finished")
+
+        with patch.object(_ent, "async_reproduce_state", slow_reproduce):
+            await engine.async_restore_lights()
+
+        # notify fired (with is_active already False) strictly before the restore ran.
+        assert events == ["notify(active=False)", "reproduce_started", "reproduce_finished"]
+
+    @pytest.mark.asyncio
+    async def test_restore_notifies_even_when_reproduce_state_raises(self):
+        notify = MagicMock()
+        engine, hass = _make_async_engine(channels=1, notify=notify)
+        hass.states.get.return_value = MagicMock()
+        await engine.async_snapshot_lights()
+        notify.reset_mock()
+
+        reproduce_mock = AsyncMock(side_effect=RuntimeError("boom"))
+        with patch.object(_ent, "async_reproduce_state", reproduce_mock):
+            await engine.async_restore_lights()
+
+        assert notify.called
+        assert engine.is_active is False
+
+    @pytest.mark.asyncio
+    async def test_restore_times_out_and_notifies_when_reproduce_state_hangs(self, caplog):
+        """A light that never answers must not hang teardown forever."""
+        notify = MagicMock()
+        engine, hass = _make_async_engine(channels=1, notify=notify)
+        hass.states.get.return_value = MagicMock()
+        await engine.async_snapshot_lights()
+        notify.reset_mock()
+
+        async def hangs_forever(*args, **kwargs):
+            await asyncio.sleep(3600)
+
+        with (
+            patch.object(_ent, "RESTORE_TIMEOUT", 0.05),
+            patch.object(_ent, "async_reproduce_state", hangs_forever),
+        ):
+            await asyncio.wait_for(engine.async_restore_lights(), timeout=1.0)
+
+        assert notify.called
+        assert engine.is_active is False
+        assert "timed out" in caplog.text.lower()
 
     def test_last_frame_time_not_updated_on_invalid_frame(self):
         engine, _ = _make_async_engine()
@@ -903,7 +899,7 @@ class TestHandleLightCommand:
 # ---------------------------------------------------------------------------
 
 
-def _make_live_engine(channels: int = 2, states: dict | None = None):
+def _make_live_engine(channels: int = 2, states: dict | None = None, notify=None):
     """Engine on a real loop; hass.services.async_call is an AsyncMock."""
     hass = MagicMock()
     hass.async_create_task = lambda coro: asyncio.get_running_loop().create_task(coro)
@@ -917,7 +913,7 @@ def _make_live_engine(channels: int = 2, states: dict | None = None):
 
     hass.states.get = get_state
     mappings = [LightMapping(channel_id=i, entity_id=f"light.test_{i}") for i in range(channels)]
-    return EntertainmentEngine(hass, mappings), hass
+    return EntertainmentEngine(hass, mappings, notify=notify), hass
 
 
 class TestDrainLoop:
@@ -969,3 +965,58 @@ class TestDrainLoop:
         await engine.async_snapshot_lights()
         assert engine._saved_states is saved
         await engine.async_restore_lights()
+
+
+# ---------------------------------------------------------------------------
+# is_driving_lights — what the binary sensor reports
+# ---------------------------------------------------------------------------
+
+
+class TestIsDrivingLights:
+    def test_false_when_idle(self):
+        engine, _ = _make_engine()
+        assert engine.is_driving_lights is False
+
+    @pytest.mark.asyncio
+    async def test_true_while_dtls_stream_active(self):
+        engine, hass = _make_live_engine(channels=1)
+        await engine.async_snapshot_lights()
+        assert engine.is_driving_lights is True
+        await engine.async_restore_lights()
+        assert engine.is_driving_lights is False
+
+    @pytest.mark.asyncio
+    async def test_true_during_classic_command_and_false_after_idle_timeout(self):
+        notify = MagicMock()
+        engine, hass = _make_live_engine(notify=notify)
+        with patch.object(_ent, "CLASSIC_DRAIN_IDLE", 0.05):
+            engine.handle_light_command(0, {"on": True})
+            assert engine.is_driving_lights is True
+            assert engine.is_active is False  # classic mode never touches the DTLS flag
+            await asyncio.sleep(0.2)
+        assert engine.is_driving_lights is False
+        # Notified both when the drain loop started and when it went idle.
+        assert notify.call_count >= 2
+
+    @pytest.mark.asyncio
+    async def test_classic_command_notifies_immediately(self):
+        notify = MagicMock()
+        engine, hass = _make_live_engine(notify=notify)
+        with patch.object(_ent, "CLASSIC_DRAIN_IDLE", 0.05):
+            engine.handle_light_command(0, {"on": True})
+            assert notify.called  # fired synchronously, not after the command was sent
+            await asyncio.sleep(0.2)
+
+    @pytest.mark.asyncio
+    async def test_restore_clears_drain_running_even_if_the_task_never_ran(self):
+        """A task cancelled before its first step never executes its body, so
+        the drain loop's own `finally` can't reset `_drain_running` — restore
+        must do it itself, or classic mode is dead until the next reload."""
+        engine, _ = _make_live_engine(channels=1)
+        await engine.async_snapshot_lights()  # creates the drain task, not yet started
+        await engine.async_restore_lights()  # cancels it before the loop ever ran
+        assert engine._drain_running is False
+        assert engine.status == "idle"
+        engine.handle_light_command(0, {"on": True})
+        assert engine.is_driving_lights is True  # a fresh drain task was started
+        engine._drain_task.cancel()
