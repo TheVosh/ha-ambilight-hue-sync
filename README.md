@@ -86,6 +86,33 @@ measured zone. JointSpace is HTTP polling, so its default is a conservative 10 H
 - **No port juggling on HA 2026.8+** — when Home Assistant listens on port 80 the Hue API rides on HA's own web server
 - **Resilient** — options apply without a restart, unavailable lights are skipped, bind failures are reported cleanly
 - **Diagnostics** — downloadable diagnostics (credentials redacted) and a bridge device grouping the entities
+- **Pause / release** — services your automations call to coordinate Zigbee airtime, or a lighting sweep, with the bridge
+
+## Pause, resume, release
+
+Three services let your own automations coordinate with the bridge instead of fighting it
+for the Zigbee radio:
+
+- **`hue_entertainment.pause`** — a courtesy gap: drop the bridge's effect on its lights for a few
+  seconds (max 30), then carry on. The session is untouched.
+- **`hue_entertainment.resume`** — end a pause early.
+- **`hue_entertainment.release`** — an intent change, e.g. a bedtime sweep that wants the lights
+  off and *staying* off: forgets the pre-session state so nothing relights the room, asks the TV
+  to stop, and forces a clean teardown if it doesn't within the grace period.
+
+```yaml
+- action: hue_entertainment.release
+  data:
+    seconds: 3
+- action: light.turn_off
+  target:
+    area_id: living_room
+```
+
+Two entities under the bridge device show what's going on: **Ambilight active** (is the bridge
+driving the lights right now) and a diagnostic **Status** sensor (`idle` / `streaming` /
+`classic` / `paused` / `releasing`). Full contract, examples and edge cases:
+[docs/pause-release.md](docs/pause-release.md).
 
 ## Requirements
 
@@ -178,56 +205,12 @@ credentials, Hue application keys, or client keys in bug reports.
 
 ## Port conflicts
 
-### Recommended: run Home Assistant itself on port 80 (HA 2026.8+)
-
-Since Home Assistant 2026.8 the frontend can listen on port 80 itself (Settings → System →
-Network → *HTTP server port*). When it does — plain HTTP, no certificate — this integration
-detects it and serves the Hue API **through Home Assistant's own web server** instead of
-starting a second one, so there is no port conflict at all. Nothing to configure; the
-*Hue API server* option (Configure → Automatic / Standalone / Home Assistant) exists only to
-override the detection. The DTLS stream still uses UDP port 2100 directly.
-
-One HA endpoint overlaps with the Hue API: `GET /api/config`. Unauthenticated requests
-(what a Hue client sends) receive the Hue bridge config; requests carrying a Home Assistant
-token reach Home Assistant's own handler as before.
-
-If Home Assistant stays on 8123, or serves HTTPS on 443, the integration runs its own server
-on port 80. When something else already owns port 80 on the host, pick one of the fallbacks below.
-
-The TV hardcodes port 80 for HTTP and port 2100 for DTLS. Port 80 cannot be changed — this is a Philips Hue protocol requirement, not a limitation of this integration. If something else (Traefik, Nginx, Pi-hole) already occupies port 80 on your HA host, you have two options.
-
-### Fallback A — Secondary IP address (simplest)
-
-Assign a second IP address to your HA host and tell the integration to use it. The bridge binds exclusively to that IP, leaving port 80 on the primary IP free for your reverse proxy.
-
-**Step 1 — assign a secondary IP.**
-
-The exact method depends on your setup. For a Linux host:
-
-```bash
-ip addr add 192.168.1.200/24 dev eth0
-```
-
-For a permanent alias, add it to your network config (e.g. `/etc/network/interfaces`, Netplan, or your router's DHCP reservations for a macvlan interface).
-
-Docker / HA OS users can create a [macvlan network](https://docs.docker.com/network/drivers/macvlan/) and attach a container with its own IP on the LAN.
-
-**Step 2 — set the Bind IP in the integration.**
-
-Go to **Configure** on the integration card, enter the secondary IP in **Bind IP address**, and save. HA will reload the integration, and the bridge will advertise and listen only on that IP.
-
-> The TV discovers the bridge via mDNS, which will advertise the bind IP automatically — no manual IP configuration needed on the TV.
-
-### Fallback B — iptables redirect
-
-If a secondary IP isn't possible, redirect traffic at the firewall level. This forwards connections arriving on a specific source (e.g. the TV's IP) from port 80 to a high port where the integration listens.
-
-```bash
-# Redirect TCP port 80 → 8080 for traffic from the TV
-iptables -t nat -A PREROUTING -s <TV_IP> -p tcp --dport 80 -j REDIRECT --to-port 8080
-```
-
-Then change the integration's HTTP port to 8080 via the config entry data. This is more fragile (requires knowing the TV's IP statically) and harder to maintain than Fallback A.
+The TV hardcodes port 80 (HTTP) and 2100 (DTLS). On **HA 2026.8+ with the frontend on port 80**
+the Hue API is served through Home Assistant's own web server and there is no conflict — nothing
+to configure. Otherwise the integration runs its own server on port 80; if something else
+(Traefik, Nginx, Pi-hole) already owns it, bind the bridge to a secondary IP address or redirect
+the TV's traffic with iptables. Both are walked through in
+[docs/port-conflicts.md](docs/port-conflicts.md).
 
 ## Network requirements
 

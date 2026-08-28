@@ -1157,3 +1157,142 @@ async def test_hue_routes_hidden_from_non_lan_clients(hass, hass_client_no_auth,
         resp = await authed.get("/api/config")
         assert resp.status == 200 and "components" in await resp.json()
     assert await hass.config_entries.async_unload(entry.entry_id)
+
+
+# ---------------------------------------------------------------------------
+# pause / resume / release services and the status sensor
+# ---------------------------------------------------------------------------
+
+import voluptuous as vol  # noqa: E402
+from homeassistant.exceptions import ServiceValidationError  # noqa: E402
+
+
+def _sensor_ids(hass: HomeAssistant, entry: MockConfigEntry) -> tuple[str, str]:
+    reg = er.async_get(hass)
+    active = reg.async_get_entity_id(
+        "binary_sensor", DOMAIN, f"{entry.entry_id}_entertainment_active"
+    )
+    status = reg.async_get_entity_id("sensor", DOMAIN, f"{entry.entry_id}_status")
+    assert active and status
+    return active, status
+
+
+async def test_status_sensor_is_named_and_idle_by_default(hass: HomeAssistant) -> None:
+    entry = await _setup(hass, _entry())
+    _, status = _sensor_ids(hass, entry)
+    assert status == "sensor.hue_entertainment_bridge_status"
+    state = hass.states.get(status)
+    assert state.state == "idle"
+    assert state.attributes["device_class"] == "enum"
+    assert set(state.attributes["options"]) == {
+        "idle",
+        "streaming",
+        "classic",
+        "paused",
+        "releasing",
+    }
+    assert await hass.config_entries.async_unload(entry.entry_id)
+
+
+async def test_pause_and_resume_services_drive_both_sensors(hass: HomeAssistant) -> None:
+    entry = await _setup(hass, _entry())
+    data = entry.runtime_data
+    active, status = _sensor_ids(hass, entry)
+
+    await data.api_server._set_entertainment_active(True, "tvuser")
+    assert hass.states.get(active).state == "on"
+    assert hass.states.get(status).state == "streaming"
+
+    await hass.services.async_call(DOMAIN, "pause", {"seconds": 10}, blocking=True)
+    assert hass.states.get(active).state == "off"  # paused counts as "not driving"
+    paused = hass.states.get(status)
+    assert paused.state == "paused"
+    assert 0 < paused.attributes["paused_remaining_seconds"] <= 10
+    assert paused.attributes["underlying_activity"] == "streaming"
+    assert data.engine.is_active  # the session itself is untouched
+
+    await hass.services.async_call(DOMAIN, "resume", {}, blocking=True)
+    assert hass.states.get(active).state == "on"
+    assert hass.states.get(status).state == "streaming"
+
+    await data.api_server._set_entertainment_active(False)
+    await hass.async_block_till_done()
+    assert await hass.config_entries.async_unload(entry.entry_id)
+
+
+async def test_pause_auto_expires_on_the_real_timer(hass: HomeAssistant) -> None:
+    entry = await _setup(hass, _entry())
+    _, status = _sensor_ids(hass, entry)
+    await hass.services.async_call(DOMAIN, "pause", {"seconds": 0.2}, blocking=True)
+    assert hass.states.get(status).state == "paused"
+    await asyncio.sleep(0.4)
+    await hass.async_block_till_done()
+    assert hass.states.get(status).state == "idle"
+    assert await hass.config_entries.async_unload(entry.entry_id)
+
+
+async def test_release_service_forces_teardown_and_skips_restore(hass: HomeAssistant) -> None:
+    """A non-compliant TV (keeps streaming) is torn down after grace + FRAME_TIMEOUT,
+    and the lights are NOT restored to their pre-session state — the caller's
+    sweep is the new truth."""
+    with (
+        patch("custom_components.hue_entertainment.FRAME_TIMEOUT", 0.5),
+        patch("custom_components.hue_entertainment.FRAME_WATCHDOG_INTERVAL", 0.1),
+        patch(
+            "custom_components.hue_entertainment.entertainment.async_reproduce_state",
+            AsyncMock(),
+        ) as reproduce,
+    ):
+        hass.states.async_set("light.a", "on", {"brightness": 200})
+        entry = await _setup(hass, _entry())
+        data = entry.runtime_data
+        active, status = _sensor_ids(hass, entry)
+
+        await data.api_server._set_entertainment_active(True, "tvuser")
+        assert data.engine._saved_states  # snapshot taken
+
+        await hass.services.async_call(DOMAIN, "release", {"seconds": 0.3}, blocking=True)
+        assert hass.states.get(active).state == "off"
+        assert hass.states.get(status).state == "releasing"
+        assert not data.api_server.entertainment_active  # stream.active flag flipped
+        assert data.engine.is_active  # ...but the session is still up, waiting on the TV
+
+        await asyncio.sleep(1.2)  # grace (0.3) + FRAME_TIMEOUT (0.5) + watchdog slack
+        await hass.async_block_till_done()
+        assert hass.states.get(status).state == "idle"
+        assert not data.engine.is_active
+        reproduce.assert_not_called()
+
+        assert await hass.config_entries.async_unload(entry.entry_id)
+
+
+async def test_release_resolves_when_tv_complies(hass: HomeAssistant) -> None:
+    entry = await _setup(hass, _entry())
+    data = entry.runtime_data
+    _, status = _sensor_ids(hass, entry)
+    await data.api_server._set_entertainment_active(True, "tvuser")
+    await hass.services.async_call(DOMAIN, "release", {"seconds": 30}, blocking=True)
+    assert hass.states.get(status).state == "releasing"
+    # The TV notices stream.active=false and stops on its own
+    await data.api_server._set_entertainment_active(False)
+    await hass.async_block_till_done()
+    assert hass.states.get(status).state == "idle"
+    assert await hass.config_entries.async_unload(entry.entry_id)
+
+
+async def test_service_schema_caps_seconds(hass: HomeAssistant) -> None:
+    entry = await _setup(hass, _entry())
+    with pytest.raises(vol.Invalid):
+        await hass.services.async_call(DOMAIN, "pause", {"seconds": 31}, blocking=True)
+    with pytest.raises(vol.Invalid):
+        await hass.services.async_call(DOMAIN, "release", {"seconds": -1}, blocking=True)
+    assert await hass.config_entries.async_unload(entry.entry_id)
+
+
+async def test_services_raise_when_no_bridge_is_loaded(hass: HomeAssistant) -> None:
+    entry = await _setup(hass, _entry())
+    assert await hass.config_entries.async_unload(entry.entry_id)
+    await hass.async_block_till_done()
+    assert hass.services.has_service(DOMAIN, "pause")  # registered for HA's lifetime
+    with pytest.raises(ServiceValidationError):
+        await hass.services.async_call(DOMAIN, "release", {}, blocking=True)

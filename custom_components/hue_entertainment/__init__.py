@@ -10,16 +10,19 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from urllib.parse import urlparse
 
+import voluptuous as vol
 from homeassistant.components.network import async_get_source_ip
 from homeassistant.components.zeroconf import async_get_async_instance
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import EVENT_HOMEASSISTANT_STARTED, EVENT_HOMEASSISTANT_STOP, Platform
-from homeassistant.core import CoreState, Event, HomeAssistant
-from homeassistant.exceptions import ConfigEntryNotReady
+from homeassistant.core import CoreState, Event, HomeAssistant, ServiceCall
+from homeassistant.exceptions import ConfigEntryNotReady, ServiceValidationError
+from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.dispatcher import async_dispatcher_send
 from homeassistant.helpers.network import get_url
 from homeassistant.helpers.storage import Store
+from homeassistant.helpers.typing import ConfigType
 from homeassistant.util.network import is_loopback
 
 from .backends import (
@@ -75,6 +78,7 @@ from .const import (
     FRAME_TIMEOUT,
     FRAME_WATCHDOG_INTERVAL,
     INPUT_PHILIPS_JOINTSPACE,
+    MAX_YIELD_SECONDS,
     SIGNAL_ENTERTAINMENT_CHANGED,
 )
 from .discovery import HueBridgeDiscovery
@@ -85,9 +89,71 @@ from .hue_api import HueAPIServer
 from .jointspace import PhilipsJointSpaceSource
 from .user_store import UserStore
 
-PLATFORMS = [Platform.BINARY_SENSOR]
+PLATFORMS = [Platform.BINARY_SENSOR, Platform.SENSOR]
+
+# Service names — see services.yaml for field schemas and docs/pause-release.md
+# for the full contract these implement.
+SERVICE_PAUSE = "pause"
+SERVICE_RESUME = "resume"
+SERVICE_RELEASE = "release"
+ATTR_SECONDS = "seconds"
+
+_SECONDS_SCHEMA = vol.Schema(
+    {
+        vol.Optional(ATTR_SECONDS, default=0): vol.All(
+            vol.Coerce(float), vol.Range(min=0, max=MAX_YIELD_SECONDS)
+        ),
+    }
+)
 
 _LOGGER = logging.getLogger(__name__)
+
+CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
+
+
+def _loaded_entries(hass: HomeAssistant) -> list[HueEntertainmentConfigEntry]:
+    """The loaded bridge entries a service call fans out over.
+
+    Raises ServiceValidationError when none is loaded (integration not set
+    up, or mid-reload) so the caller's automation sees a clear error rather
+    than a silent no-op.
+    """
+    entries = hass.config_entries.async_loaded_entries(DOMAIN)
+    if not entries:
+        raise ServiceValidationError(translation_domain=DOMAIN, translation_key="no_bridge_loaded")
+    return entries
+
+
+async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
+    """Register the domain services (once per HA run, independent of entries).
+
+    Services live here rather than in async_setup_entry so they exist for the
+    whole lifetime of HA and never need unregister-on-last-unload bookkeeping
+    (HA quality scale: "action-setup"). Each call fans out over whatever
+    entries are loaded at that moment — in practice exactly one bridge.
+    """
+
+    async def _async_handle_pause(call: ServiceCall) -> None:
+        for entry in _loaded_entries(hass):
+            await entry.runtime_data.engine.async_pause(call.data[ATTR_SECONDS])
+
+    async def _async_handle_resume(call: ServiceCall) -> None:
+        for entry in _loaded_entries(hass):
+            await entry.runtime_data.engine.async_resume()
+
+    async def _async_handle_release(call: ServiceCall) -> None:
+        for entry in _loaded_entries(hass):
+            # Advisory: tell a compliant TV the stream is over (it notices on
+            # its next poll and disconnects on its own). Independent of
+            # engine.async_release()'s own guaranteed local suppression —
+            # see docs/pause-release.md.
+            entry.runtime_data.api_server.clear_entertainment()
+            await entry.runtime_data.engine.async_release(call.data[ATTR_SECONDS])
+
+    hass.services.async_register(DOMAIN, SERVICE_PAUSE, _async_handle_pause, _SECONDS_SCHEMA)
+    hass.services.async_register(DOMAIN, SERVICE_RESUME, _async_handle_resume)
+    hass.services.async_register(DOMAIN, SERVICE_RELEASE, _async_handle_release, _SECONDS_SCHEMA)
+    return True
 
 
 @dataclass
@@ -179,8 +245,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: HueEntertainmentConfigEn
         for i, entity_id in enumerate(light_entities)
     ]
 
-    engine = EntertainmentEngine(hass, mappings)
-    if backend_name == BACKEND_HUE:
+    engine = EntertainmentEngine(
+        hass, mappings, notify=lambda: async_dispatcher_send(hass, SIGNAL_ENTERTAINMENT_CHANGED)
+    )
+    if backend_name == BACKEND_HUE and not output_configured:
+        backend = DisabledOutputBackend()
+    elif backend_name == BACKEND_HUE:
         channel_map = {
             index: int(channel["channel_id"])
             for index, channel in enumerate(area_channels, 1)
@@ -305,6 +375,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: HueEntertainmentConfigEn
 
     def _handle_frame(frame: bytes) -> None:
         nonlocal last_frame_time
+        if isinstance(backend, HomeAssistantLightBackend):
+            engine.handle_frame(frame)
+            return
         parsed = parse_huestream_frame(frame)
         if parsed is None:
             return
@@ -338,20 +411,45 @@ async def async_setup_entry(hass: HomeAssistant, entry: HueEntertainmentConfigEn
             watchdog_task.cancel()
         watchdog_task = None
 
+    async def _async_stop_entertainment_session() -> None:
+        """Tear down a session and stop its configured output backend.
+
+        Shared by every path that can end a session — the API-driven stop
+        (`_on_entertainment_stop`) and the watchdog timeout, so they cannot
+        diverge. The HA-light backend restores lights through the engine; the
+        physical-Hue backend stops its native Entertainment session.
+        """
+        api_server.clear_entertainment()
+        await backend.async_stop()
+        if isinstance(backend, HueEntertainmentBackend):
+            await engine.async_restore_lights()
+
     async def _frame_watchdog() -> None:
         try:
-            while api_server.entertainment_active:
+            while (
+                engine.is_active
+                if isinstance(backend, HomeAssistantLightBackend)
+                else api_server.entertainment_active
+            ):
                 await asyncio.sleep(FRAME_WATCHDOG_INTERVAL)
-                if not api_server.entertainment_active:
+                session_active = (
+                    engine.is_active
+                    if isinstance(backend, HomeAssistantLightBackend)
+                    else api_server.entertainment_active
+                )
+                if not session_active:
                     break
-                elapsed = time.monotonic() - last_frame_time
+                activity_time = (
+                    engine.last_frame_time
+                    if isinstance(backend, HomeAssistantLightBackend)
+                    else last_frame_time
+                )
+                elapsed = time.monotonic() - activity_time
                 if elapsed > FRAME_TIMEOUT:
                     _LOGGER.warning(
                         "No entertainment frames for %.1f seconds, auto-stopping", elapsed
                     )
-                    api_server.clear_entertainment()
-                    await backend.async_stop()
-                    async_dispatcher_send(hass, SIGNAL_ENTERTAINMENT_CHANGED)
+                    await _async_stop_entertainment_session()
                     break
         except asyncio.CancelledError:
             pass
@@ -364,7 +462,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: HueEntertainmentConfigEn
         except Exception:
             # TV side remains available; a later stream activation retries the physical bridge.
             _LOGGER.warning("Output backend is not ready; retrying on the next TV stream")
-        async_dispatcher_send(hass, SIGNAL_ENTERTAINMENT_CHANGED)
+        else:
+            if isinstance(backend, HueEntertainmentBackend):
+                await engine.async_snapshot_lights()
         if watchdog_task is None or watchdog_task.done():
             # Owned by the entry: cancelled automatically on unload
             watchdog_task = entry.async_create_background_task(
@@ -373,8 +473,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: HueEntertainmentConfigEn
 
     async def _on_entertainment_stop() -> None:
         _cancel_watchdog()
-        await backend.async_stop()
-        async_dispatcher_send(hass, SIGNAL_ENTERTAINMENT_CHANGED)
+        await _async_stop_entertainment_session()
 
     api_server.set_entertainment_callbacks(_on_entertainment_start, _on_entertainment_stop)
     # TV "classic" mode (no DTLS stream): per-light REST commands follow the

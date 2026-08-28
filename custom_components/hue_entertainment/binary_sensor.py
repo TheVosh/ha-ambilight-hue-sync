@@ -38,7 +38,18 @@ async def async_setup_entry(
 
 
 class HueEntertainmentBinarySensor(BinarySensorEntity):
-    """Reports whether Hue Entertainment mode is currently active."""
+    """Reports whether the bridge is currently driving these lights.
+
+    True for a DTLS entertainment stream OR classic-mode (plain per-light
+    REST, no stream) — both write real commands to the lights, so an
+    automation deciding "should I treat these lights as claimed right now"
+    needs both. False while paused or releasing, even if the underlying
+    session/traffic hasn't actually stopped — the whole point of pausing or
+    releasing is "don't count on the bridge right now."
+
+    This only ever answers yes/no. For *why* it's no (paused vs releasing,
+    for how long, waiting on what) see HueEntertainmentStatusSensor.
+    """
 
     _attr_has_entity_name = True
     _attr_translation_key = "entertainment_active"
@@ -63,7 +74,7 @@ class HueEntertainmentBinarySensor(BinarySensorEntity):
 
     @property
     def is_on(self) -> bool:
-        return self._engine.is_active
+        return self._engine.is_driving_lights
 
     @property
     def extra_state_attributes(self) -> dict:

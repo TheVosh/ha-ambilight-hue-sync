@@ -4,6 +4,44 @@
       "entertainment_active": {
         "name": "Ambilight active"
       }
+    },
+    "sensor": {
+      "status": {
+        "name": "Status",
+        "state": {
+          "idle": "Idle",
+          "streaming": "Streaming",
+          "classic": "Classic mode",
+          "paused": "Paused",
+          "releasing": "Releasing"
+        }
+      }
+    }
+  },
+  "services": {
+    "pause": {
+      "name": "Pause",
+      "description": "Suppress the bridge's effect on its lights for a short time, then resume automatically. For radio-airtime contention: nothing about what the lights should look like has changed, so the session (if any) is left alone and carries on once the pause ends.",
+      "fields": {
+        "seconds": {
+          "name": "Seconds",
+          "description": "How long to pause for. 0 uses a healthy default (a couple of seconds)."
+        }
+      }
+    },
+    "resume": {
+      "name": "Resume",
+      "description": "Cancel an in-progress pause early. No effect if nothing is paused, or if a release is in progress."
+    },
+    "release": {
+      "name": "Release",
+      "description": "Stop driving the lights until a new session genuinely begins. For an intent change such as a lighting sweep: discards the pending restore target so the lights stay as the caller set them, asks a compliant TV to stop via the stream-active flag, and forces the same clean teardown if it doesn't comply within the grace period.",
+      "fields": {
+        "seconds": {
+          "name": "Seconds",
+          "description": "Grace period to wait for the TV to comply before forcing it. 0 uses a healthy default (a couple of seconds)."
+        }
+      }
     }
   },
   "config": {
@@ -149,6 +187,11 @@
         "standalone": "Standalone server on port 80",
         "homeassistant": "Home Assistant's web server"
       }
+    }
+  },
+  "exceptions": {
+    "no_bridge_loaded": {
+      "message": "No Hue Entertainment Bridge is loaded."
     }
   }
 }
