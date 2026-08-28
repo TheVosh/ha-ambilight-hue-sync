@@ -563,11 +563,29 @@ class EntertainmentEngine:
         this is a no-op while releasing. Calling pause() again while already
         paused resets the timer to a fresh `seconds` from now (last call
         wins), regardless of how much time was left on the previous one.
+
+        Flushes any command already queued (dirty/pending on a mapping) but
+        not yet sent. The gate in handle_frame/handle_light_command only
+        blocks *new* commands from being queued while suppressed — it never
+        touched what was already sitting in the pipe. Against a live ~25fps
+        stream something is queued almost continuously, so without this a
+        pause/release would routinely be undone within a couple hundred
+        milliseconds by a command that was queued a moment before suppression
+        began: found live 2026-08-28, a released light relit ~770ms after
+        being swept off while the TV kept streaming. One narrower gap
+        remains and is NOT fixed by this: a command already past this point
+        and being sent by the drain loop (mid-await on the Zigbee service
+        call) cannot be recalled — a byte already on the wire stays sent.
+        _reset_mappings() also clears tolerance tracking, which is correct
+        here too: the first command after suppression ends should snap to
+        the live colour immediately, not fade from a timestamp that's now
+        seconds stale.
         """
         if self._releasing:
             _LOGGER.debug("pause() ignored: a release is already in progress")
             return
         self._cancel_pause()
+        self._reset_mappings()
         resolved = seconds if seconds > 0 else DEFAULT_YIELD_SECONDS
         self._paused_until = time.monotonic() + resolved
         self._notify()
@@ -611,8 +629,19 @@ class EntertainmentEngine:
         wins over a courtesy gap). Calling release() again while already
         releasing restarts the grace period — safe for a caller unsure
         whether an earlier call landed.
+
+        Flushes any command already queued but not yet sent — see
+        async_pause's docstring for why this is needed (a live stream keeps
+        something queued almost continuously) and the one narrower gap it
+        doesn't close (a command already mid-send when release() is called).
+        For release specifically this is what makes the whole point of the
+        service actually hold: without it, whatever the caller's sweep just
+        set could be undone within a fraction of a second by a stale queued
+        command, even though the intent (see above) already discarded the
+        restore target and is not coming back.
         """
         self._cancel_pause()
+        self._reset_mappings()
         resolved = seconds if seconds > 0 else DEFAULT_YIELD_SECONDS
         self._saved_states = None  # nothing to restore — the caller's new state IS correct
         self._releasing = True

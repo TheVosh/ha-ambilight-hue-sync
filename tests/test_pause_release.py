@@ -190,6 +190,23 @@ class TestPauseResume:
         assert engine._paused_until == 1002.0 + 5
         assert scheduled_calls[0].cancelled is True  # first timer superseded
 
+    @pytest.mark.asyncio
+    async def test_pause_flushes_a_command_already_queued_before_the_call(self):
+        """Regression for the live 2026-08-28 finding: the gate in
+        handle_frame only blocks *new* commands from being queued while
+        suppressed — it never touched what a frame already queued a moment
+        earlier. Against a live ~25fps stream something is queued almost
+        continuously, so without a flush at pause()/release() time, that
+        stale command survives into the drain loop and gets sent anyway."""
+        engine, _ = _make_live_engine(channels=1)
+        engine.handle_frame(_make_v2_frame())
+        assert engine._mappings[0].dirty is True  # sanity: it really queued
+
+        await engine.async_pause(5)
+
+        assert engine._mappings[0].dirty is False
+        assert engine._mappings[0].pending_data is None
+
 
 def _make_v2_frame(channel_id: int = 0) -> bytes:
     return v2_header() + v2_channel(channel_id, 30000, 30000, 30000)
@@ -288,6 +305,38 @@ class TestRelease:
         await engine.async_restore_lights()
         assert engine.status == "idle"
         assert engine._releasing is False
+
+    @pytest.mark.asyncio
+    async def test_release_flushes_a_command_already_queued_before_the_call(self):
+        """Regression for the live 2026-08-28 finding: a Living Room bulb,
+        swept off by house_lights_off right after release() was called,
+        relit ~770ms later while the TV kept streaming — a command a frame
+        had already queued a moment before release() survived into the
+        drain loop and got sent regardless of the new suppression state."""
+        engine, _ = _make_live_engine(channels=1)
+        await engine.async_snapshot_lights()
+        engine.handle_frame(_make_v2_frame())
+        assert engine._mappings[0].dirty is True  # sanity: it really queued
+
+        await engine.async_release(2)
+
+        assert engine._mappings[0].dirty is False
+        assert engine._mappings[0].pending_data is None
+
+    @pytest.mark.asyncio
+    async def test_release_prevents_the_drain_loop_from_actually_sending_it(self):
+        """End-to-end version of the flush test: not just that the mapping
+        looks clean, but that the drain loop — running for real on the event
+        loop, not mocked away — never issues the stale light.turn_on at all."""
+        engine, hass = _make_live_engine(channels=1)
+        await engine.async_snapshot_lights()
+        engine.handle_frame(_make_v2_frame())  # queues a command; drain task
+        # has not had a chance to run yet — nothing has awaited since.
+
+        await engine.async_release(2)
+        await asyncio.sleep(0.05)  # let the (already-running) drain loop take a turn
+
+        hass.services.async_call.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

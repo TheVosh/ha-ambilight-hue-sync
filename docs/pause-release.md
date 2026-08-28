@@ -56,7 +56,11 @@ automatically. Nothing about what these lights should look like has changed
 — the session, if any, is left completely alone underneath: frames or
 classic-mode commands keep arriving and keep being counted, they're just not
 applied. A DTLS handshake or classic command is never blocked by a pause;
-only its *effect* on the lights is dropped.
+only its *effect* on the lights is dropped — including a command a frame
+queued a moment before the call: pausing (or releasing) discards anything
+already queued but not yet sent, not just new arrivals. Without that, a
+command queued an instant earlier would still reach the light during the
+"paused" window.
 
 ## `hue_entertainment.resume` — end a pause early
 
@@ -73,7 +77,9 @@ switch off and *stay* off. Release:
 1. **Discards the pending restore target immediately.** Whatever the caller
    sets next is now correct — there is nothing to restore back to, so the
    session ending later won't relight the room.
-2. **Drops frame/command effects immediately**, same as pause.
+2. **Drops frame/command effects immediately**, same as pause — including
+   anything already queued but not yet sent, so a live stream can't undo the
+   sweep a fraction of a second later.
 3. **Flips the bridge's `stream.active` flag to `false`**, so a well-behaved
    TV notices on its next check and disconnects on its own — an ordinary,
    clean teardown.
