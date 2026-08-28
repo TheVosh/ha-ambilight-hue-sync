@@ -11,7 +11,7 @@ from homeassistant.helpers.entity import EntityCategory
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .binary_sensor import bridge_device_info
-from .const import DOMAIN, SIGNAL_ENTERTAINMENT_CHANGED
+from .const import SIGNAL_ENTERTAINMENT_CHANGED
 
 if TYPE_CHECKING:
     from . import HueEntertainmentConfigEntry

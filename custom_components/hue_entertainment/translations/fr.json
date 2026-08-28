@@ -4,6 +4,44 @@
       "entertainment_active": {
         "name": "Ambilight actif"
       }
+    },
+    "sensor": {
+      "status": {
+        "name": "État",
+        "state": {
+          "idle": "Inactif",
+          "streaming": "Diffusion",
+          "classic": "Mode classique",
+          "paused": "En pause",
+          "releasing": "Libération"
+        }
+      }
+    }
+  },
+  "services": {
+    "pause": {
+      "name": "Pause",
+      "description": "Suspend brièvement l'effet du pont sur ses lumières, puis reprend automatiquement. Pour un conflit d'accès radio : rien n'a changé quant à l'état attendu des lumières, la session (s'il y en a une) est laissée telle quelle et reprend à la fin de la pause.",
+      "fields": {
+        "seconds": {
+          "name": "Secondes",
+          "description": "Durée de la pause. 0 utilise une valeur par défaut raisonnable (quelques secondes)."
+        }
+      }
+    },
+    "resume": {
+      "name": "Reprendre",
+      "description": "Annule une pause en cours avant son terme. Sans effet si rien n'est en pause, ou si une libération est en cours."
+    },
+    "release": {
+      "name": "Libérer",
+      "description": "Cesse de piloter les lumières jusqu'au début d'une nouvelle session. Pour un changement d'intention, par exemple une extinction générale : abandonne l'état à restaurer pour que les lumières restent telles que l'appelant les a réglées, demande au téléviseur de s'arrêter via l'indicateur de flux actif, et force la même coupure propre s'il n'obtempère pas dans le délai de grâce.",
+      "fields": {
+        "seconds": {
+          "name": "Secondes",
+          "description": "Délai de grâce laissé au téléviseur pour obtempérer avant de forcer l'arrêt. 0 utilise une valeur par défaut raisonnable (quelques secondes)."
+        }
+      }
     }
   },
   "config": {
@@ -76,6 +114,11 @@
         "standalone": "Serveur autonome sur le port 80",
         "homeassistant": "Serveur web de Home Assistant"
       }
+    }
+  },
+  "exceptions": {
+    "no_bridge_loaded": {
+      "message": "Aucun pont de divertissement Hue n'est chargé."
     }
   }
 }

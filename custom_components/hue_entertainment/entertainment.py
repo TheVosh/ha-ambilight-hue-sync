@@ -423,8 +423,8 @@ class EntertainmentEngine:
         if self._releasing:
             attrs["release_forcing"] = self._release_forcing
         if self._releasing or self._is_paused:
-            attrs["underlying_activity"] = "streaming" if self._active else (
-                "classic" if self._drain_running else "idle"
+            attrs["underlying_activity"] = (
+                "streaming" if self._active else ("classic" if self._drain_running else "idle")
             )
         return attrs
 
@@ -516,6 +516,13 @@ class EntertainmentEngine:
             except asyncio.CancelledError:
                 pass
             self._drain_task = None
+        # The drain loop's own `finally` resets this on every exit — except
+        # when the task was cancelled before its first step ever ran (session
+        # ended in the same event-loop turn it started), in which case the
+        # coroutine body never executes at all. Reset it here too, or
+        # _ensure_drain_task would refuse to start a fresh loop for the next
+        # classic command and the sensor would report "classic" forever.
+        self._drain_running = False
         self._notify()
         saved = self._saved_states
         self._saved_states = None
@@ -595,6 +602,11 @@ class EntertainmentEngine:
         way, this integration never leaves you waiting on the TV forever:
         worst case is `seconds` + FRAME_TIMEOUT.
 
+        Without a DTLS session (classic mode, or nothing at all) there is no
+        watchdog to lean on, so the grace timer resolves the release itself
+        when it expires: classic commands are dropped for `seconds`, then
+        the next one drives the lights again.
+
         Contract: supersedes an in-progress pause (an intent change always
         wins over a courtesy gap). Calling release() again while already
         releasing restarts the grace period — safe for a caller unsure
@@ -608,7 +620,9 @@ class EntertainmentEngine:
         self._notify()
         if self._release_cancel is not None:
             self._release_cancel()
-        self._release_cancel = async_call_later(self._hass, resolved, self._on_release_grace_expired)
+        self._release_cancel = async_call_later(
+            self._hass, resolved, self._on_release_grace_expired
+        )
 
     def _cancel_pause(self) -> None:
         self._paused_until = None
@@ -637,6 +651,13 @@ class EntertainmentEngine:
         self._release_cancel = None
         if not self._releasing:
             return  # already resolved (TV reconnected, or restore already ran)
+        if not self._active:
+            # Classic mode or idle: there is no DTLS session for the watchdog
+            # to tear down, so nothing else would ever resolve this release.
+            # The grace period is the whole guarantee here — commands were
+            # dropped for its duration; the next one drives the lights again.
+            self._cancel_release()
+            return
         self._release_forcing = True
         self._notify()
 

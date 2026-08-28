@@ -21,7 +21,7 @@
   "services": {
     "pause": {
       "name": "Pause",
-      "description": "Suppress the bridge's effect on its lights for a short duration, then resume automatically. For radio-airtime contention — nothing about what these lights should look like has changed, so the session (if any) is left alone and resumes normally once the pause ends.",
+      "description": "Suppress the bridge's effect on its lights for a short time, then resume automatically. For radio-airtime contention: nothing about what the lights should look like has changed, so the session (if any) is left alone and carries on once the pause ends.",
       "fields": {
         "seconds": {
           "name": "Seconds",
@@ -35,7 +35,7 @@
     },
     "release": {
       "name": "Release",
-      "description": "Stop driving these lights until a new session genuinely begins — for an intent change (e.g. a lighting sweep) rather than a brief courtesy gap. Discards the pending restore target immediately, so a session ending afterwards won't relight whatever the caller just set. Asks a compliant TV to stop via the stream-active flag; if it doesn't within the given grace period, forces the same clean teardown regardless.",
+      "description": "Stop driving the lights until a new session genuinely begins. For an intent change such as a lighting sweep: discards the pending restore target so the lights stay as the caller set them, asks a compliant TV to stop via the stream-active flag, and forces the same clean teardown if it doesn't comply within the grace period.",
       "fields": {
         "seconds": {
           "name": "Seconds",
@@ -114,6 +114,11 @@
         "standalone": "Standalone server on port 80",
         "homeassistant": "Home Assistant's web server"
       }
+    }
+  },
+  "exceptions": {
+    "no_bridge_loaded": {
+      "message": "No Hue Entertainment Bridge is loaded."
     }
   }
 }

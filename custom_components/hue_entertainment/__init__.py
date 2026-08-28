@@ -11,16 +11,17 @@ from dataclasses import dataclass
 from urllib.parse import urlparse
 
 import voluptuous as vol
-
 from homeassistant.components.network import async_get_source_ip
 from homeassistant.components.zeroconf import async_get_async_instance
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import EVENT_HOMEASSISTANT_STARTED, EVENT_HOMEASSISTANT_STOP, Platform
 from homeassistant.core import CoreState, Event, HomeAssistant, ServiceCall
-from homeassistant.exceptions import ConfigEntryNotReady
+from homeassistant.exceptions import ConfigEntryNotReady, ServiceValidationError
+from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.dispatcher import async_dispatcher_send
 from homeassistant.helpers.network import get_url
 from homeassistant.helpers.storage import Store
+from homeassistant.helpers.typing import ConfigType
 from homeassistant.util.network import is_loopback
 
 from .config_flow import mac_from_bridge_id
@@ -49,8 +50,8 @@ from .user_store import UserStore
 
 PLATFORMS = [Platform.BINARY_SENSOR, Platform.SENSOR]
 
-# Service names — see services.yaml for field schemas and README "Pause,
-# resume, release" for the full contract these implement.
+# Service names — see services.yaml for field schemas and docs/pause-release.md
+# for the full contract these implement.
 SERVICE_PAUSE = "pause"
 SERVICE_RESUME = "resume"
 SERVICE_RELEASE = "release"
@@ -65,6 +66,53 @@ _SECONDS_SCHEMA = vol.Schema(
 )
 
 _LOGGER = logging.getLogger(__name__)
+
+CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
+
+
+def _loaded_entries(hass: HomeAssistant) -> list[HueEntertainmentConfigEntry]:
+    """The loaded bridge entries a service call fans out over.
+
+    Raises ServiceValidationError when none is loaded (integration not set
+    up, or mid-reload) so the caller's automation sees a clear error rather
+    than a silent no-op.
+    """
+    entries = hass.config_entries.async_loaded_entries(DOMAIN)
+    if not entries:
+        raise ServiceValidationError(translation_domain=DOMAIN, translation_key="no_bridge_loaded")
+    return entries
+
+
+async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
+    """Register the domain services (once per HA run, independent of entries).
+
+    Services live here rather than in async_setup_entry so they exist for the
+    whole lifetime of HA and never need unregister-on-last-unload bookkeeping
+    (HA quality scale: "action-setup"). Each call fans out over whatever
+    entries are loaded at that moment — in practice exactly one bridge.
+    """
+
+    async def _async_handle_pause(call: ServiceCall) -> None:
+        for entry in _loaded_entries(hass):
+            await entry.runtime_data.engine.async_pause(call.data[ATTR_SECONDS])
+
+    async def _async_handle_resume(call: ServiceCall) -> None:
+        for entry in _loaded_entries(hass):
+            await entry.runtime_data.engine.async_resume()
+
+    async def _async_handle_release(call: ServiceCall) -> None:
+        for entry in _loaded_entries(hass):
+            # Advisory: tell a compliant TV the stream is over (it notices on
+            # its next poll and disconnects on its own). Independent of
+            # engine.async_release()'s own guaranteed local suppression —
+            # see docs/pause-release.md.
+            entry.runtime_data.api_server.clear_entertainment()
+            await entry.runtime_data.engine.async_release(call.data[ATTR_SECONDS])
+
+    hass.services.async_register(DOMAIN, SERVICE_PAUSE, _async_handle_pause, _SECONDS_SCHEMA)
+    hass.services.async_register(DOMAIN, SERVICE_RESUME, _async_handle_resume)
+    hass.services.async_register(DOMAIN, SERVICE_RELEASE, _async_handle_release, _SECONDS_SCHEMA)
+    return True
 
 
 @dataclass
@@ -246,37 +294,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: HueEntertainmentConfigEn
     # TV "classic" mode (no DTLS stream): per-light REST commands follow the
     # same Zigbee-paced drain loop.
     api_server.set_light_command_callback(engine.handle_light_command)
-
-    async def _async_handle_pause(call: ServiceCall) -> None:
-        for loaded_entry in hass.config_entries.async_loaded_entries(DOMAIN):
-            await loaded_entry.runtime_data.engine.async_pause(call.data[ATTR_SECONDS])
-
-    async def _async_handle_resume(call: ServiceCall) -> None:
-        for loaded_entry in hass.config_entries.async_loaded_entries(DOMAIN):
-            await loaded_entry.runtime_data.engine.async_resume()
-
-    async def _async_handle_release(call: ServiceCall) -> None:
-        for loaded_entry in hass.config_entries.async_loaded_entries(DOMAIN):
-            # Advisory: tell a compliant TV the stream is over (it may notice
-            # on its next poll and disconnect on its own). Independent of
-            # engine.async_release()'s own guaranteed local suppression —
-            # see README "Pause, resume, release".
-            loaded_entry.runtime_data.api_server.clear_entertainment()
-            await loaded_entry.runtime_data.engine.async_release(call.data[ATTR_SECONDS])
-
-    if not hass.services.has_service(DOMAIN, SERVICE_PAUSE):
-        # Domain-scoped, not per-entry: this integration only ever expects one
-        # bridge, so registering once (guarded, since async_setup_entry can
-        # re-run on reload) and fanning out over async_loaded_entries covers
-        # it without per-entry bookkeeping. Deliberately not unregistered on
-        # unload — the fan-out over zero loaded entries is a harmless no-op,
-        # and correct unregister-on-last-unload bookkeeping isn't worth it
-        # for an integration that in practice has exactly one entry.
-        hass.services.async_register(DOMAIN, SERVICE_PAUSE, _async_handle_pause, _SECONDS_SCHEMA)
-        hass.services.async_register(DOMAIN, SERVICE_RESUME, _async_handle_resume)
-        hass.services.async_register(
-            DOMAIN, SERVICE_RELEASE, _async_handle_release, _SECONDS_SCHEMA
-        )
 
     # Runtime objects for the platforms, the options flow and diagnostics
     entry.runtime_data = HueEntertainmentData(
