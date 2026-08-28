@@ -76,7 +76,11 @@
       "invalid_topology": "The Philips TV returned an invalid Ambilight topology.",
       "unknown": "The connection or authorization failed. Try again.",
       "link_button_not_pressed": "Press the Hue Bridge link button, then try again.",
-      "bridge_unreachable": "Hue Bridge unreachable."
+      "bridge_unreachable": "Hue Bridge unreachable.",
+      "registration_rejected": "Hue Bridge registration was rejected. Try the link button again.",
+      "malformed_registration_response": "Hue Bridge returned an invalid registration response.",
+      "invalid_generated_credentials": "Hue Bridge rejected the newly generated credentials.",
+      "entertainment_api_initialization_failed": "Could not initialize the Hue Entertainment API."
     }
   },
   "options": {
@@ -118,7 +122,13 @@
       "invalid_ip": "Not a valid IPv4 address",
       "invalid_host": "Enter a Hue Bridge host.",
       "hue_unreachable": "Hue Bridge unreachable.",
-      "no_entertainment_areas": "No Entertainment Areas found."
+      "no_entertainment_areas": "No Entertainment Areas found.",
+      "link_button_not_pressed": "Press the Hue Bridge link button, then try again.",
+      "bridge_unreachable": "Hue Bridge unreachable.",
+      "registration_rejected": "Hue Bridge registration was rejected. Try the link button again.",
+      "malformed_registration_response": "Hue Bridge returned an invalid registration response.",
+      "invalid_generated_credentials": "Hue Bridge rejected the newly generated credentials.",
+      "entertainment_api_initialization_failed": "Could not initialize the Hue Entertainment API."
     }
   },
   "selector": {

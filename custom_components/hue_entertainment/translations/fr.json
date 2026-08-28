@@ -76,7 +76,11 @@
       "invalid_topology": "Le téléviseur Philips a renvoyé une topologie Ambilight invalide.",
       "unknown": "La connexion ou l’autorisation a échoué. Réessayez.",
       "link_button_not_pressed": "Appuyez sur le bouton du pont Hue, puis réessayez.",
-      "bridge_unreachable": "Pont Hue inaccessible."
+      "bridge_unreachable": "Pont Hue inaccessible.",
+      "registration_rejected": "L’enregistrement auprès du pont Hue a été refusé. Réessayez après avoir appuyé sur le bouton.",
+      "malformed_registration_response": "Le pont Hue a renvoyé une réponse d’enregistrement invalide.",
+      "invalid_generated_credentials": "Le pont Hue a refusé les nouveaux identifiants générés.",
+      "entertainment_api_initialization_failed": "Impossible d’initialiser l’API Hue Entertainment."
     }
   },
   "options": {
@@ -118,7 +122,13 @@
       "invalid_ip": "Adresse IPv4 invalide",
       "invalid_host": "Saisissez l’hôte du pont Hue.",
       "hue_unreachable": "Pont Hue inaccessible.",
-      "no_entertainment_areas": "Aucune zone de divertissement trouvée."
+      "no_entertainment_areas": "Aucune zone de divertissement trouvée.",
+      "link_button_not_pressed": "Appuyez sur le bouton du pont Hue, puis réessayez.",
+      "bridge_unreachable": "Pont Hue inaccessible.",
+      "registration_rejected": "L’enregistrement auprès du pont Hue a été refusé. Réessayez après avoir appuyé sur le bouton.",
+      "malformed_registration_response": "Le pont Hue a renvoyé une réponse d’enregistrement invalide.",
+      "invalid_generated_credentials": "Le pont Hue a refusé les nouveaux identifiants générés.",
+      "entertainment_api_initialization_failed": "Impossible d’initialiser l’API Hue Entertainment."
     }
   },
   "selector": {

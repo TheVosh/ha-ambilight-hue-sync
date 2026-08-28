@@ -7,8 +7,11 @@ they are skipped under the plain nix shell.
 from __future__ import annotations
 
 import asyncio
+import sys
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
+import aiohttp
 import pytest
 
 pytest.importorskip("pytest_homeassistant_custom_component")
@@ -38,11 +41,60 @@ from custom_components.hue_entertainment.const import (  # noqa: E402
     INPUT_PHILIPS_JOINTSPACE,
     DOMAIN,
 )
+from custom_components.hue_entertainment.config_flow import (  # noqa: E402
+    HueSetupError,
+    async_pair_hue_entertainment,
+)
 
 BRIDGE_ID = "001788FFFE0AB1C2"
 LIGHTS = ["light.a", "light.b"]
 
 pytestmark = pytest.mark.usefixtures("enable_custom_integrations", "mock_async_zeroconf")
+
+
+async def test_physical_hue_pairing_validates_areas_with_generated_app_key(monkeypatch) -> None:
+    """A successful registration must not query CLIP v2 anonymously."""
+    created_with: list[str | None] = []
+
+    class FakeHueEntertainmentAPI:
+        def __init__(self, _host: str, app_key: str | None = None) -> None:
+            created_with.append(app_key)
+
+        async def pair(self, _device_type: str) -> dict[str, str]:
+            return {"username": "generated-test-key", "clientkey": "generated-test-client-key"}
+
+        async def get_entertainment_areas(self) -> list[str]:
+            assert created_with[-1] == "generated-test-key"
+            return ["area"]
+
+        async def close(self) -> None:
+            pass
+
+    monkeypatch.setitem(sys.modules, "hue_entertainment", SimpleNamespace(HueEntertainmentAPI=FakeHueEntertainmentAPI))
+    credentials, areas = await async_pair_hue_entertainment("test-bridge")
+    assert credentials["username"] == "generated-test-key"
+    assert areas == ["area"]
+    assert created_with == [None, "generated-test-key"]
+
+
+async def test_physical_hue_pairing_keeps_credential_validation_failure_distinct(monkeypatch) -> None:
+    """A post-registration 403 must never be presented as a button failure."""
+    class FakeHueEntertainmentAPI:
+        def __init__(self, _host: str, app_key: str | None = None) -> None:
+            self.app_key = app_key
+
+        async def pair(self, _device_type: str) -> dict[str, str]:
+            return {"username": "generated-test-key", "clientkey": "generated-test-client-key"}
+
+        async def get_entertainment_areas(self) -> list[str]:
+            raise aiohttp.ClientResponseError(None, (), status=403)
+
+        async def close(self) -> None:
+            pass
+
+    monkeypatch.setitem(sys.modules, "hue_entertainment", SimpleNamespace(HueEntertainmentAPI=FakeHueEntertainmentAPI))
+    with pytest.raises(HueSetupError, match="invalid_generated_credentials"):
+        await async_pair_hue_entertainment("test-bridge")
 
 
 @pytest.fixture(autouse=True)

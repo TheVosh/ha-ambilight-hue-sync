@@ -63,6 +63,81 @@ PAIRING_TIMEOUT = LINK_BUTTON_TIMEOUT
 _LOGGER = logging.getLogger(__name__)
 
 
+class HueSetupError(Exception):
+    """A credential-free, user-facing physical Hue setup failure."""
+
+    def __init__(self, error: str) -> None:
+        super().__init__(error)
+        self.error = error
+
+
+def _pairing_error_from_timeout(error: TimeoutError) -> str:
+    """Classify the library's registration result without exposing credentials."""
+    message = str(error).lower()
+    if "link button" in message:
+        return "link_button_not_pressed"
+    if "unexpected pairing response" in message:
+        return "malformed_registration_response"
+    if "connect" in message or "timeout" in message:
+        return "bridge_unreachable"
+    return "registration_rejected"
+
+
+async def async_pair_hue_entertainment(host: str) -> tuple[dict[str, str], list]:
+    """Register then validate a physical Hue Entertainment application.
+
+    The library intentionally does not mutate its app-key after V1 registration,
+    so discovery must use a new authenticated client with the generated username.
+    """
+    from hue_entertainment import HueEntertainmentAPI
+
+    _LOGGER.debug("Physical Hue setup stage=registration")
+    registration_api = HueEntertainmentAPI(host)
+    try:
+        credentials = await registration_api.pair("ha_hue_entertainment#home_assistant")
+    except TimeoutError as err:
+        _LOGGER.debug("Physical Hue setup stage=registration result=%s", _pairing_error_from_timeout(err))
+        raise HueSetupError(_pairing_error_from_timeout(err)) from err
+    except (aiohttp.ClientConnectionError, OSError) as err:
+        _LOGGER.debug("Physical Hue setup stage=registration result=bridge_unreachable: %s", type(err).__name__)
+        raise HueSetupError("bridge_unreachable") from err
+    except Exception as err:  # noqa: BLE001 - library error details can include sensitive data
+        _LOGGER.debug("Physical Hue setup stage=registration result=registration_rejected: %s", type(err).__name__)
+        raise HueSetupError("registration_rejected") from err
+    finally:
+        await registration_api.close()
+
+    if not isinstance(credentials, dict) or not all(
+        isinstance(credentials.get(key), str) and credentials[key] for key in ("username", "clientkey")
+    ):
+        _LOGGER.debug("Physical Hue setup stage=registration result=malformed_registration_response")
+        raise HueSetupError("malformed_registration_response")
+
+    _LOGGER.debug("Physical Hue setup stage=credential_validation result=success")
+    discovery_api = HueEntertainmentAPI(host, credentials["username"])
+    try:
+        _LOGGER.debug("Physical Hue setup stage=entertainment_area_discovery")
+        areas = await discovery_api.get_entertainment_areas()
+    except aiohttp.ClientResponseError as err:
+        result = "invalid_generated_credentials" if err.status in (401, 403) else "entertainment_api_initialization_failed"
+        _LOGGER.debug("Physical Hue setup stage=entertainment_area_discovery http_status=%d result=%s", err.status, result)
+        raise HueSetupError(result) from err
+    except (aiohttp.ClientConnectionError, OSError) as err:
+        _LOGGER.debug("Physical Hue setup stage=entertainment_area_discovery result=bridge_unreachable: %s", type(err).__name__)
+        raise HueSetupError("bridge_unreachable") from err
+    except Exception as err:  # noqa: BLE001 - never include credential data in UI/log messages
+        _LOGGER.debug("Physical Hue setup stage=entertainment_area_discovery result=entertainment_api_initialization_failed: %s", type(err).__name__)
+        raise HueSetupError("entertainment_api_initialization_failed") from err
+    finally:
+        await discovery_api.close()
+
+    if not areas:
+        _LOGGER.debug("Physical Hue setup stage=entertainment_area_discovery result=no_entertainment_areas")
+        raise HueSetupError("no_entertainment_areas")
+    _LOGGER.debug("Physical Hue setup stage=entertainment_area_discovery result=success area_count=%d", len(areas))
+    return credentials, areas
+
+
 def _is_ipv4(value: str) -> bool:
     """True for a well-formed dotted-quad IPv4 address."""
     try:
@@ -258,18 +333,9 @@ class HueEntertainmentConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):  # t
             return self._create_entry()
         if user_input is not None:
             try:
-                from hue_entertainment import HueEntertainmentAPI
-                api = HueEntertainmentAPI(self._hue_host)
-                try:
-                    self._hue_credentials = await api.pair("ha_hue_entertainment#home_assistant")
-                    self._hue_areas = await api.get_entertainment_areas()
-                finally:
-                    await api.close()
-            except TimeoutError as err:
-                errors["base"] = "link_button_not_pressed" if "button" in str(err).lower() else "bridge_unreachable"
-            except Exception:  # noqa: BLE001 - errors are intentionally credential-free
-                _LOGGER.debug("Physical Hue Bridge pairing failed", exc_info=True)
-                errors["base"] = "unknown"
+                self._hue_credentials, self._hue_areas = await async_pair_hue_entertainment(self._hue_host)
+            except HueSetupError as err:
+                errors["base"] = err.error
             else:
                 if not self._hue_areas:
                     errors["base"] = "no_entertainment_areas"
@@ -570,22 +636,10 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
         errors = {}
         if user_input is not None:
             try:
-                from hue_entertainment import HueEntertainmentAPI
-                api = HueEntertainmentAPI(self._hue_host)
-                try:
-                    self._hue_credentials = await api.pair("ha_hue_entertainment#home_assistant")
-                    self._hue_areas = await api.get_entertainment_areas()
-                finally:
-                    await api.close()
-                if not self._hue_areas:
-                    errors["base"] = "no_entertainment_areas"
-                else:
-                    return await self.async_step_hue_setup_area()
-            except TimeoutError as err:
-                errors["base"] = "link_button_not_pressed" if "button" in str(err).lower() else "bridge_unreachable"
-            except Exception:
-                _LOGGER.debug("Deferred Hue pairing failed", exc_info=True)
-                errors["base"] = "unknown"
+                self._hue_credentials, self._hue_areas = await async_pair_hue_entertainment(self._hue_host)
+                return await self.async_step_hue_setup_area()
+            except HueSetupError as err:
+                errors["base"] = err.error
         return self.async_show_form(step_id="hue_setup_pair", data_schema=vol.Schema({}), errors=errors)
 
     async def async_step_hue_setup_area(self, user_input=None):
