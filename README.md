@@ -55,93 +55,33 @@ The integration:
 - **No port juggling on HA 2026.8+** — when Home Assistant listens on port 80 the Hue API rides on HA's own web server
 - **Resilient** — options apply without a restart, unavailable lights are skipped, bind failures are reported cleanly
 - **Diagnostics** — downloadable diagnostics (credentials redacted) and a bridge device grouping the entities
-- **Pause / release** — services other automations can call to coordinate Zigbee airtime or an intent change (e.g. a lighting sweep) with the bridge; see below
+- **Pause / release** — services your automations call to coordinate Zigbee airtime, or a lighting sweep, with the bridge
 
 ## Pause, resume, release
 
-The bridge writes to real Zigbee lights, which means it can end up sharing a
-radio with — and colliding with — anything else that also controls those
-lights: a script sweeping a room's lights off, a firmware update on a nearby
-device, anything sending a burst of commands. Three services let another
-automation coordinate with the bridge instead of fighting it.
+Three services let your own automations coordinate with the bridge instead of fighting it
+for the Zigbee radio:
 
-### `hue_entertainment.pause` — a courtesy gap
+- **`hue_entertainment.pause`** — a courtesy gap: drop the bridge's effect on its lights for a few
+  seconds (max 30), then carry on. The session is untouched.
+- **`hue_entertainment.resume`** — end a pause early.
+- **`hue_entertainment.release`** — an intent change, e.g. a bedtime sweep that wants the lights
+  off and *staying* off: forgets the pre-session state so nothing relights the room, asks the TV
+  to stop, and forces a clean teardown if it doesn't within the grace period.
 
-Suppresses the bridge's effect on its lights for `seconds` (default, or
-`seconds: 0`, is a couple of seconds; capped at 30s), then resumes
-automatically. Nothing about what these lights should look like has
-changed — the session, if any, is left completely alone underneath: frames
-or classic-mode commands keep arriving and keep being counted, they're just
-not applied. A DTLS handshake or classic command is never blocked by a
-pause; only its *effect* on the lights is dropped. Use this for a brief
-"let something else get a word in edgewise" gap.
+```yaml
+- action: hue_entertainment.release
+  data:
+    seconds: 3
+- action: light.turn_off
+  target:
+    area_id: living_room
+```
 
-### `hue_entertainment.resume` — end a pause early
-
-Cancels an in-progress pause immediately, before its timer would have. No
-effect if nothing is paused, or if a release is already in progress (see
-below — release has no early-cancel counterpart of its own).
-
-### `hue_entertainment.release` — an intent change
-
-For when what these lights *should* be doing has actually changed — the
-canonical case is a bedtime or arm-away lighting sweep that wants these
-lights to switch off and *stay* off, not relight the moment the TV sends
-its next frame. Release:
-
-1. Discards the pending restore target immediately. The whole point is that
-   whatever the caller just set is now correct — there is nothing to
-   restore back to, so a session ending later won't relight the room.
-2. Drops frame/command effects immediately, same as pause.
-3. Flips the bridge's `stream.active` flag to `false`, so a well-behaved TV
-   notices on its next check and disconnects on its own — producing a
-   clean, ordinary teardown.
-4. If the TV doesn't comply within `seconds` (default/`0` → a couple of
-   seconds, capped at 30s), forces the same teardown anyway: the bridge
-   simply stops feeding the *existing* dead-stream watchdog, which then
-   fires on schedule and tears the session down through the normal path.
-   No separate forced-disconnect mechanism exists or is needed — released
-   worst-case wait is bounded at `seconds` + the watchdog's own timeout,
-   never indefinite.
-
-A new session starting while a release is still pending (the TV
-reconnects) *is* the release resolving — it's treated as the old session
-ending and a fresh one beginning, with a fresh snapshot, not as "already
-active."
-
-### The contract between them
-
-These are documented guarantees, not implementation happenstance — a
-caller shouldn't need to know what else might be calling these services to
-reason about the outcome:
-
-- **`release` always wins over an in-flight `pause`.** An intent change
-  supersedes a courtesy gap; pausing on top of a release and letting the
-  pause's own timer later re-enable things would silently undo the release.
-- **`pause` is a no-op while a release is in progress.** Effects are
-  already suppressed; letting a pause's later auto-expiry interfere with
-  the release would be exactly the same problem in reverse.
-- **`resume` is a no-op while releasing**, and a no-op if nothing is
-  paused. Release has no caller-triggered early-cancel — it resolves via
-  the TV reconnecting, or via its own grace-period timeout, never via a
-  service call.
-- **Calling `pause` again while already paused** resets the timer to a
-  fresh `seconds` from the moment of the new call (last call wins), not
-  the longer or shorter of the two.
-- **Calling `release` again while already releasing** restarts its grace
-  period the same way — safe for a caller that isn't sure an earlier call
-  landed.
-
-### Observability
-
-`binary_sensor.*_ambilight_active` (entity ID depends on your instance)
-answers one question only: is the bridge driving these lights *right now*
-— true for both a DTLS stream and classic mode, false while paused or
-releasing regardless of what's happening underneath. For *why* it's off —
-paused with how much time left, or releasing and whether it's still
-waiting politely on the TV or already forcing — see the accompanying
-`sensor.*_status` entity, whose state is one of `idle` / `streaming` /
-`classic` / `paused` / `releasing`.
+Two entities under the bridge device show what's going on: **Ambilight active** (is the bridge
+driving the lights right now) and a diagnostic **Status** sensor (`idle` / `streaming` /
+`classic` / `paused` / `releasing`). Full contract, examples and edge cases:
+[docs/pause-release.md](docs/pause-release.md).
 
 ## Requirements
 
@@ -186,56 +126,12 @@ redacted snapshot (paired clients, engine counters, options) to attach to bug re
 
 ## Port conflicts
 
-### Recommended: run Home Assistant itself on port 80 (HA 2026.8+)
-
-Since Home Assistant 2026.8 the frontend can listen on port 80 itself (Settings → System →
-Network → *HTTP server port*). When it does — plain HTTP, no certificate — this integration
-detects it and serves the Hue API **through Home Assistant's own web server** instead of
-starting a second one, so there is no port conflict at all. Nothing to configure; the
-*Hue API server* option (Configure → Automatic / Standalone / Home Assistant) exists only to
-override the detection. The DTLS stream still uses UDP port 2100 directly.
-
-One HA endpoint overlaps with the Hue API: `GET /api/config`. Unauthenticated requests
-(what a Hue client sends) receive the Hue bridge config; requests carrying a Home Assistant
-token reach Home Assistant's own handler as before.
-
-If Home Assistant stays on 8123, or serves HTTPS on 443, the integration runs its own server
-on port 80. When something else already owns port 80 on the host, pick one of the fallbacks below.
-
-The TV hardcodes port 80 for HTTP and port 2100 for DTLS. Port 80 cannot be changed — this is a Philips Hue protocol requirement, not a limitation of this integration. If something else (Traefik, Nginx, Pi-hole) already occupies port 80 on your HA host, you have two options.
-
-### Fallback A — Secondary IP address (simplest)
-
-Assign a second IP address to your HA host and tell the integration to use it. The bridge binds exclusively to that IP, leaving port 80 on the primary IP free for your reverse proxy.
-
-**Step 1 — assign a secondary IP.**
-
-The exact method depends on your setup. For a Linux host:
-
-```bash
-ip addr add 192.168.1.200/24 dev eth0
-```
-
-For a permanent alias, add it to your network config (e.g. `/etc/network/interfaces`, Netplan, or your router's DHCP reservations for a macvlan interface).
-
-Docker / HA OS users can create a [macvlan network](https://docs.docker.com/network/drivers/macvlan/) and attach a container with its own IP on the LAN.
-
-**Step 2 — set the Bind IP in the integration.**
-
-Go to **Configure** on the integration card, enter the secondary IP in **Bind IP address**, and save. HA will reload the integration, and the bridge will advertise and listen only on that IP.
-
-> The TV discovers the bridge via mDNS, which will advertise the bind IP automatically — no manual IP configuration needed on the TV.
-
-### Fallback B — iptables redirect
-
-If a secondary IP isn't possible, redirect traffic at the firewall level. This forwards connections arriving on a specific source (e.g. the TV's IP) from port 80 to a high port where the integration listens.
-
-```bash
-# Redirect TCP port 80 → 8080 for traffic from the TV
-iptables -t nat -A PREROUTING -s <TV_IP> -p tcp --dport 80 -j REDIRECT --to-port 8080
-```
-
-Then change the integration's HTTP port to 8080 via the config entry data. This is more fragile (requires knowing the TV's IP statically) and harder to maintain than Fallback A.
+The TV hardcodes port 80 (HTTP) and 2100 (DTLS). On **HA 2026.8+ with the frontend on port 80**
+the Hue API is served through Home Assistant's own web server and there is no conflict — nothing
+to configure. Otherwise the integration runs its own server on port 80; if something else
+(Traefik, Nginx, Pi-hole) already owns it, bind the bridge to a secondary IP address or redirect
+the TV's traffic with iptables. Both are walked through in
+[docs/port-conflicts.md](docs/port-conflicts.md).
 
 ## Network requirements
 
