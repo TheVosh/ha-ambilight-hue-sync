@@ -117,6 +117,30 @@ measured zone. JointSpace is HTTP polling, so its default is a conservative 10 H
 4. The TV pairing wizard starts a 60-second window — trigger a Hue bridge search on your TV
 5. Once paired, the integration is ready
 
+### Modern Philips TVs: JointSpace and native Hue Entertainment
+
+Some newer Philips TVs no longer offer the old **Ambilight+Hue** pairing UI. Choose
+**Philips JointSpace Ambilight API** as the input and **Philips Hue Bridge** as the
+output instead. The integration reads `/ambilight/measured`, maps the TV edge zones,
+and sends native DTLS Hue Entertainment frames to a physical Entertainment Area.
+
+Requirements are mode-specific: JointSpace needs a reachable TV with JointSpace API
+support, its API version and credentials. Many TVs use HTTPS/Digest authentication;
+disable certificate verification only when the TV uses a self-signed certificate that
+Home Assistant cannot verify. JointSpace mode does not need the virtual Hue HTTP or
+DTLS ports.
+
+Create the Entertainment Area in the Hue app first. Setup validates the TV, selects
+the Hue Bridge (using official Home Assistant Hue metadata when available), performs a
+one-time physical link-button authorization, selects the Area, maps its channels, and
+saves. This authorization creates separate Entertainment credentials and a client key;
+they are never shown in the UI. Hue authorization can be deferred and completed later.
+
+Channel mappings are `auto`, `top`, `bottom`, `left_top`, `left_middle`,
+`left_bottom`, `right_top`, `right_middle`, or `right_bottom`. Auto uses Hue channel
+positions; a manual choice overrides it. Mappings can be changed later without
+re-pairing.
+
 ## Configuration
 
 Open **Configure** on the integration card to:
@@ -129,6 +153,28 @@ Open **Configure** on the integration card to:
 
 Changes apply immediately — no restart needed. **Download diagnostics** on the same card gives a
 redacted snapshot (paired clients, engine counters, options) to attach to bug reports.
+
+For JointSpace with a physical Hue Bridge, **Configure** is a management menu for
+**TV / JointSpace**, **Philips Hue Bridge**, **Entertainment Area**, **Ambilight
+mapping**, **Performance**, and **Re-authorize Hue Bridge**. Opening Configure never
+re-pairs the bridge; reauthorization is explicit.
+
+## Troubleshooting
+
+Enable sanitized debug logs when investigating a problem:
+
+```yaml
+logger:
+  default: warning
+  logs:
+    custom_components.hue_entertainment: debug
+    custom_components.hue_entertainment.jointspace: debug
+```
+
+For JointSpace failures, check TV credentials, network reachability, API version, TLS
+verification, and topology support. For Hue failures, press the physical link button,
+verify that an Entertainment Area exists, and retry authorization. Never include TV
+credentials, Hue application keys, or client keys in bug reports.
 
 ## Port conflicts
 

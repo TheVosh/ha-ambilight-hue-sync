@@ -15,6 +15,8 @@ CONF_HUE_APP_KEY = "hue_app_key"
 CONF_HUE_CLIENT_KEY = "hue_client_key"
 CONF_HUE_AREA_ID = "hue_area_id"
 CONF_HUE_AREA_CHANNELS = "hue_area_channels"
+CONF_HUE_BRIDGE_NAME = "hue_bridge_name"
+CONF_HUE_AREA_NAME = "hue_area_name"
 CONF_STREAM_FPS = "stream_fps"
 CONF_BRIGHTNESS_MULTIPLIER = "brightness_multiplier"
 CONF_SATURATION_MULTIPLIER = "saturation_multiplier"
@@ -43,8 +45,15 @@ DEFAULT_TV_POLL_FPS = 10
 DEFAULT_TV_INACTIVITY_TIMEOUT = 5.0
 
 TV_RELATIVE_POSITIONS = (
-    "auto", "top", "bottom", "left_top", "left_middle", "left_bottom",
-    "right_top", "right_middle", "right_bottom",
+    "auto",
+    "top",
+    "bottom",
+    "left_top",
+    "left_middle",
+    "left_bottom",
+    "right_top",
+    "right_middle",
+    "right_bottom",
 )
 
 BACKEND_HOME_ASSISTANT = "home_assistant"

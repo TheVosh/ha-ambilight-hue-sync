@@ -16,54 +16,73 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import EVENT_HOMEASSISTANT_STARTED, EVENT_HOMEASSISTANT_STOP, Platform
 from homeassistant.core import CoreState, Event, HomeAssistant
 from homeassistant.exceptions import ConfigEntryNotReady
+from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.dispatcher import async_dispatcher_send
 from homeassistant.helpers.network import get_url
 from homeassistant.helpers.storage import Store
-from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.util.network import is_loopback
 
+from .backends import (
+    DisabledOutputBackend,
+    EntertainmentOutputBackend,
+    HomeAssistantLightBackend,
+    HueEntertainmentBackend,
+)
 from .config_flow import mac_from_bridge_id
 from .const import (
+    BACKEND_HUE,
     CONF_API_PORT,
     CONF_BIND_IP,
     CONF_BRIDGE_ID,
+    CONF_BRIGHTNESS_MULTIPLIER,
     CONF_ENTERTAINMENT_PORT,
     CONF_HTTP_MODE,
+    CONF_HUE_APP_KEY,
+    CONF_HUE_AREA_CHANNELS,
+    CONF_HUE_AREA_ID,
+    CONF_HUE_CLIENT_KEY,
+    CONF_HUE_HOST,
+    CONF_INPUT_MODE,
     CONF_LIGHTS,
     CONF_OUTPUT_BACKEND,
-    CONF_HUE_HOST,
-    CONF_HUE_APP_KEY,
-    CONF_HUE_CLIENT_KEY,
-    CONF_HUE_AREA_ID,
-    CONF_HUE_AREA_CHANNELS,
-    CONF_STREAM_FPS,
-    CONF_BRIGHTNESS_MULTIPLIER,
-    CONF_SATURATION_MULTIPLIER,
-    CONF_INPUT_MODE, CONF_TV_HOST, CONF_TV_USERNAME, CONF_TV_PASSWORD, CONF_TV_API_VERSION,
-    CONF_TV_PORT, CONF_TV_VERIFY_SSL, CONF_TV_POLL_FPS, CONF_REVERSE_LEFT, CONF_REVERSE_RIGHT,
-    CONF_REVERSE_TOP, CONF_REVERSE_BOTTOM, INPUT_PHILIPS_JOINTSPACE, DEFAULT_INPUT_MODE,
-    DEFAULT_TV_API_VERSION, DEFAULT_TV_PORT, DEFAULT_TV_POLL_FPS, CONF_TV_CHANNEL_MAPPINGS,
-    CONF_TV_INACTIVITY_TIMEOUT, DEFAULT_TV_INACTIVITY_TIMEOUT,
     CONF_OUTPUT_CONFIGURED,
-    BACKEND_HUE,
-    DEFAULT_OUTPUT_BACKEND,
-    DEFAULT_STREAM_FPS,
+    CONF_REVERSE_BOTTOM,
+    CONF_REVERSE_LEFT,
+    CONF_REVERSE_RIGHT,
+    CONF_REVERSE_TOP,
+    CONF_SATURATION_MULTIPLIER,
+    CONF_STREAM_FPS,
+    CONF_TV_API_VERSION,
+    CONF_TV_CHANNEL_MAPPINGS,
+    CONF_TV_HOST,
+    CONF_TV_INACTIVITY_TIMEOUT,
+    CONF_TV_PASSWORD,
+    CONF_TV_POLL_FPS,
+    CONF_TV_PORT,
+    CONF_TV_USERNAME,
+    CONF_TV_VERIFY_SSL,
     DEFAULT_API_PORT,
     DEFAULT_ENTERTAINMENT_PORT,
     DEFAULT_HTTP_MODE,
+    DEFAULT_INPUT_MODE,
+    DEFAULT_OUTPUT_BACKEND,
+    DEFAULT_STREAM_FPS,
+    DEFAULT_TV_API_VERSION,
+    DEFAULT_TV_INACTIVITY_TIMEOUT,
+    DEFAULT_TV_POLL_FPS,
+    DEFAULT_TV_PORT,
     DOMAIN,
     FRAME_TIMEOUT,
     FRAME_WATCHDOG_INTERVAL,
+    INPUT_PHILIPS_JOINTSPACE,
     SIGNAL_ENTERTAINMENT_CHANGED,
 )
 from .discovery import HueBridgeDiscovery
 from .dtls_psk import DTLSPSKServer
-from .entertainment import EntertainmentEngine, FrameMailbox, LightMapping
-from .entertainment import parse_huestream_frame
-from .backends import DisabledOutputBackend, EntertainmentOutputBackend, HomeAssistantLightBackend, HueEntertainmentBackend
-from .jointspace import PhilipsJointSpaceSource
+from .entertainment import EntertainmentEngine, FrameMailbox, LightMapping, parse_huestream_frame
 from .ha_http import async_get_http_host, resolve_use_ha_http
 from .hue_api import HueAPIServer
+from .jointspace import PhilipsJointSpaceSource
 from .user_store import UserStore
 
 PLATFORMS = [Platform.BINARY_SENSOR]
@@ -95,7 +114,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: HueEntertainmentConfigEn
     backend_name = entry.options.get(
         CONF_OUTPUT_BACKEND, entry.data.get(CONF_OUTPUT_BACKEND, DEFAULT_OUTPUT_BACKEND)
     )
-    input_mode = entry.options.get(CONF_INPUT_MODE, entry.data.get(CONF_INPUT_MODE, DEFAULT_INPUT_MODE))
+    input_mode = entry.options.get(
+        CONF_INPUT_MODE, entry.data.get(CONF_INPUT_MODE, DEFAULT_INPUT_MODE)
+    )
     output_configured = entry.options.get(
         CONF_OUTPUT_CONFIGURED, entry.data.get(CONF_OUTPUT_CONFIGURED, True)
     )
@@ -103,13 +124,17 @@ async def async_setup_entry(hass: HomeAssistant, entry: HueEntertainmentConfigEn
     area_channels: list[dict] = entry.options.get(
         CONF_HUE_AREA_CHANNELS, entry.data.get(CONF_HUE_AREA_CHANNELS, [])
     )
+    backend: EntertainmentOutputBackend
     if backend_name == BACKEND_HUE and not output_configured:
-        backend: EntertainmentOutputBackend = DisabledOutputBackend()
+        backend = DisabledOutputBackend()
     elif backend_name == BACKEND_HUE:
         # The physical area's channel layout is persisted at configuration time.
         # It becomes the virtual bridge layout exposed to the TV, so virtual IDs
         # deterministically map by index to native physical channel IDs.
-        light_entities = [str(channel.get("name", f"Channel {index}")) for index, channel in enumerate(area_channels, 1)]
+        light_entities = [
+            str(channel.get("name", f"Channel {index}"))
+            for index, channel in enumerate(area_channels, 1)
+        ]
 
     bridge_id: str = entry.data[CONF_BRIDGE_ID]
     mac = mac_from_bridge_id(bridge_id)
@@ -161,7 +186,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: HueEntertainmentConfigEn
             for index, channel in enumerate(area_channels, 1)
             if "channel_id" in channel
         }
-        backend: EntertainmentOutputBackend = HueEntertainmentBackend(
+        backend = HueEntertainmentBackend(
             entry.options.get(CONF_HUE_HOST, entry.data.get(CONF_HUE_HOST, "")),
             entry.options.get(CONF_HUE_APP_KEY, entry.data.get(CONF_HUE_APP_KEY, "")),
             entry.options.get(CONF_HUE_CLIENT_KEY, entry.data.get(CONF_HUE_CLIENT_KEY, "")),
@@ -195,6 +220,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: HueEntertainmentConfigEn
 
     jointspace_source: PhilipsJointSpaceSource | None = None
     jointspace_backend_started = False
+
     async def _start_jointspace_backend() -> None:
         nonlocal jointspace_backend_started
         if jointspace_backend_started:
@@ -211,30 +237,45 @@ async def async_setup_entry(hass: HomeAssistant, entry: HueEntertainmentConfigEn
         backend.send_frame(colors, 0)
 
     if input_mode == INPUT_PHILIPS_JOINTSPACE:
-        reversed_edges = {
-            edge for edge, option in (("left", CONF_REVERSE_LEFT), ("right", CONF_REVERSE_RIGHT),
-                                      ("top", CONF_REVERSE_TOP), ("bottom", CONF_REVERSE_BOTTOM))
-            if entry.options.get(option, entry.data.get(option, False))
-        }
+        reversed_edges = frozenset(
+            {
+                edge
+                for edge, option in (
+                    ("left", CONF_REVERSE_LEFT),
+                    ("right", CONF_REVERSE_RIGHT),
+                    ("top", CONF_REVERSE_TOP),
+                    ("bottom", CONF_REVERSE_BOTTOM),
+                )
+                if entry.options.get(option, entry.data.get(option, False))
+            }
+        )
         jointspace_source = PhilipsJointSpaceSource(
             async_get_clientsession(hass),
             entry.options.get(CONF_TV_HOST, entry.data.get(CONF_TV_HOST, "")),
             entry.options.get(CONF_TV_USERNAME, entry.data.get(CONF_TV_USERNAME, "")),
             entry.options.get(CONF_TV_PASSWORD, entry.data.get(CONF_TV_PASSWORD, "")),
-            positions, _jointspace_frame,
+            positions,
+            _jointspace_frame,
             api_version=int(entry.options.get(CONF_TV_API_VERSION, DEFAULT_TV_API_VERSION)),
             port=int(entry.options.get(CONF_TV_PORT, DEFAULT_TV_PORT)),
             fps=int(entry.options.get(CONF_TV_POLL_FPS, DEFAULT_TV_POLL_FPS)),
             verify_ssl=bool(entry.options.get(CONF_TV_VERIFY_SSL, False)),
             reversed_edges=reversed_edges,
             manual_mappings={
-                index: entry.options.get(CONF_TV_CHANNEL_MAPPINGS, entry.data.get(CONF_TV_CHANNEL_MAPPINGS, {})).get(str(index), channel.get("tv_mapping", "auto"))
+                index: entry.options.get(
+                    CONF_TV_CHANNEL_MAPPINGS, entry.data.get(CONF_TV_CHANNEL_MAPPINGS, {})
+                ).get(str(index), channel.get("tv_mapping", "auto"))
                 for index, channel in enumerate(area_channels, 1)
             },
         )
         jointspace_source.set_inactivity_callback(
             backend.async_stop,
-            float(entry.options.get(CONF_TV_INACTIVITY_TIMEOUT, entry.data.get(CONF_TV_INACTIVITY_TIMEOUT, DEFAULT_TV_INACTIVITY_TIMEOUT))),
+            float(
+                entry.options.get(
+                    CONF_TV_INACTIVITY_TIMEOUT,
+                    entry.data.get(CONF_TV_INACTIVITY_TIMEOUT, DEFAULT_TV_INACTIVITY_TIMEOUT),
+                )
+            ),
         )
     api_server = HueAPIServer(
         bridge_id=bridge_id,
@@ -261,6 +302,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: HueEntertainmentConfigEn
     # Frames are handed over through a single-slot mailbox (freshest wins) so a
     # stalled loop never accumulates a backlog of stale frames.
     last_frame_time = 0.0
+
     def _handle_frame(frame: bytes) -> None:
         nonlocal last_frame_time
         parsed = parse_huestream_frame(frame)
@@ -373,7 +415,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: HueEntertainmentConfigEn
                 await jointspace_source.async_start()
                 _LOGGER.info("JointSpace Ambilight source started")
             except Exception:
-                _LOGGER.warning("JointSpace Ambilight source is unavailable; it will retry on reload", exc_info=True)
+                _LOGGER.warning(
+                    "JointSpace Ambilight source is unavailable; it will retry on reload",
+                    exc_info=True,
+                )
         _LOGGER.info(
             "Hue Entertainment Bridge started: input=%s, bridge_id=%s, http=%s:%d, dtls=:%d, lights=%d, users=%d",
             input_mode,
@@ -446,7 +491,9 @@ async def async_unload_entry(hass: HomeAssistant, entry: HueEntertainmentConfigE
     data.cancel_watchdog()
     # Same order as HA shutdown: stop the inputs first so no frame re-dirties a
     # slot while the lights are being restored.
-    input_mode = entry.options.get(CONF_INPUT_MODE, entry.data.get(CONF_INPUT_MODE, DEFAULT_INPUT_MODE))
+    input_mode = entry.options.get(
+        CONF_INPUT_MODE, entry.data.get(CONF_INPUT_MODE, DEFAULT_INPUT_MODE)
+    )
     if input_mode != INPUT_PHILIPS_JOINTSPACE:
         await data.dtls_server.async_stop()
         await data.api_server.async_stop()

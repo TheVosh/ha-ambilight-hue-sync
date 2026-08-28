@@ -1,9 +1,9 @@
 """Safe reuse of public Home Assistant Hue config-entry connection data."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
 
-from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_HOST
 from homeassistant.core import HomeAssistant
 
@@ -11,6 +11,7 @@ from homeassistant.core import HomeAssistant
 @dataclass(frozen=True)
 class KnownHueBridge:
     """Non-secret bridge metadata exposed by an official HA Hue entry."""
+
     entry_id: str
     host: str
     name: str

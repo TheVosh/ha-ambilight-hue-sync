@@ -6,12 +6,15 @@ import asyncio
 import ipaddress
 import logging
 import uuid
+from importlib import import_module
+from typing import Protocol, cast
 
-import voluptuous as vol
 import aiohttp
+import voluptuous as vol
 from homeassistant import config_entries
 from homeassistant.components.network import async_get_source_ip
 from homeassistant.components.zeroconf import async_get_async_instance
+from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.selector import (
     BooleanSelector,
     EntitySelector,
@@ -21,49 +24,77 @@ from homeassistant.helpers.selector import (
     SelectSelectorMode,
     TextSelector,
 )
-from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .const import (
-    CONF_BIND_IP,
-    CONF_BRIDGE_ID,
-    CONF_HTTP_MODE,
-    CONF_LIGHTS,
-    CONF_PAIR_NOW,
-    CONF_OUTPUT_BACKEND,
-    CONF_HUE_HOST,
-    CONF_HUE_APP_KEY,
-    CONF_HUE_CLIENT_KEY,
-    CONF_HUE_AREA_ID,
-    CONF_HUE_AREA_CHANNELS,
-    CONF_INPUT_MODE, CONF_TV_HOST, CONF_TV_USERNAME, CONF_TV_PASSWORD, CONF_TV_API_VERSION,
-    CONF_TV_PORT, CONF_TV_VERIFY_SSL, INPUT_LEGACY_HUESTREAM, INPUT_PHILIPS_JOINTSPACE,
-    DEFAULT_INPUT_MODE, DEFAULT_TV_API_VERSION, DEFAULT_TV_PORT,
-    CONF_TV_CHANNEL_MAPPINGS, TV_RELATIVE_POSITIONS,
-    CONF_OUTPUT_CONFIGURED,
-    CONF_TV_POLL_FPS, CONF_TV_INACTIVITY_TIMEOUT, CONF_BRIGHTNESS_MULTIPLIER,
-    CONF_SATURATION_MULTIPLIER, CONF_REVERSE_LEFT, CONF_REVERSE_RIGHT,
-    CONF_REVERSE_TOP, CONF_REVERSE_BOTTOM,
     BACKEND_HOME_ASSISTANT,
     BACKEND_HUE,
-    DEFAULT_OUTPUT_BACKEND,
+    CONF_BIND_IP,
+    CONF_BRIDGE_ID,
+    CONF_BRIGHTNESS_MULTIPLIER,
+    CONF_HTTP_MODE,
+    CONF_HUE_APP_KEY,
+    CONF_HUE_AREA_CHANNELS,
+    CONF_HUE_AREA_ID,
+    CONF_HUE_AREA_NAME,
+    CONF_HUE_BRIDGE_NAME,
+    CONF_HUE_CLIENT_KEY,
+    CONF_HUE_HOST,
+    CONF_INPUT_MODE,
+    CONF_LIGHTS,
+    CONF_OUTPUT_BACKEND,
+    CONF_OUTPUT_CONFIGURED,
+    CONF_PAIR_NOW,
+    CONF_REVERSE_BOTTOM,
+    CONF_REVERSE_LEFT,
+    CONF_REVERSE_RIGHT,
+    CONF_REVERSE_TOP,
+    CONF_SATURATION_MULTIPLIER,
+    CONF_TV_API_VERSION,
+    CONF_TV_CHANNEL_MAPPINGS,
+    CONF_TV_HOST,
+    CONF_TV_INACTIVITY_TIMEOUT,
+    CONF_TV_PASSWORD,
+    CONF_TV_POLL_FPS,
+    CONF_TV_PORT,
+    CONF_TV_USERNAME,
+    CONF_TV_VERIFY_SSL,
     DEFAULT_API_PORT,
     DEFAULT_HTTP_MODE,
+    DEFAULT_INPUT_MODE,
+    DEFAULT_OUTPUT_BACKEND,
+    DEFAULT_TV_API_VERSION,
+    DEFAULT_TV_PORT,
     DOMAIN,
     HTTP_MODE_AUTO,
     HTTP_MODE_HOMEASSISTANT,
     HTTP_MODE_STANDALONE,
+    INPUT_LEGACY_HUESTREAM,
+    INPUT_PHILIPS_JOINTSPACE,
     LINK_BUTTON_TIMEOUT,
+    TV_RELATIVE_POSITIONS,
 )
 from .discovery import HueBridgeDiscovery
 from .ha_http import async_get_http_host, resolve_use_ha_http
-from .hue_api import HueAPIServer
 from .ha_hue import async_known_hue_bridges
+from .hue_api import HueAPIServer
 from .jointspace import async_validate_jointspace
 from .user_store import UserStore
 
 PAIRING_TIMEOUT = LINK_BUTTON_TIMEOUT
 
 _LOGGER = logging.getLogger(__name__)
+
+
+class _HueApi(Protocol):
+    def __init__(self, host: str, app_key: str | None = None) -> None: ...
+    async def pair(self, device_type: str) -> dict[str, str]: ...
+    async def get_entertainment_areas(self) -> list: ...
+    async def close(self) -> None: ...
+
+
+def _hue_api_type() -> type[_HueApi]:
+    """Load the optional PyPI client at the narrow package-name boundary."""
+    return cast(type[_HueApi], getattr(import_module("hue_entertainment"), "HueEntertainmentAPI"))
 
 
 class HueSetupError(Exception):
@@ -92,28 +123,39 @@ async def async_pair_hue_entertainment(host: str) -> tuple[dict[str, str], list]
     The library intentionally does not mutate its app-key after V1 registration,
     so discovery must use a new authenticated client with the generated username.
     """
-    from hue_entertainment import HueEntertainmentAPI
+    HueEntertainmentAPI = _hue_api_type()
 
     _LOGGER.debug("Physical Hue setup stage=registration")
     registration_api = HueEntertainmentAPI(host)
     try:
         credentials = await registration_api.pair("ha_hue_entertainment#home_assistant")
     except TimeoutError as err:
-        _LOGGER.debug("Physical Hue setup stage=registration result=%s", _pairing_error_from_timeout(err))
+        _LOGGER.debug(
+            "Physical Hue setup stage=registration result=%s", _pairing_error_from_timeout(err)
+        )
         raise HueSetupError(_pairing_error_from_timeout(err)) from err
     except (aiohttp.ClientConnectionError, OSError) as err:
-        _LOGGER.debug("Physical Hue setup stage=registration result=bridge_unreachable: %s", type(err).__name__)
+        _LOGGER.debug(
+            "Physical Hue setup stage=registration result=bridge_unreachable: %s",
+            type(err).__name__,
+        )
         raise HueSetupError("bridge_unreachable") from err
     except Exception as err:  # noqa: BLE001 - library error details can include sensitive data
-        _LOGGER.debug("Physical Hue setup stage=registration result=registration_rejected: %s", type(err).__name__)
+        _LOGGER.debug(
+            "Physical Hue setup stage=registration result=registration_rejected: %s",
+            type(err).__name__,
+        )
         raise HueSetupError("registration_rejected") from err
     finally:
         await registration_api.close()
 
     if not isinstance(credentials, dict) or not all(
-        isinstance(credentials.get(key), str) and credentials[key] for key in ("username", "clientkey")
+        isinstance(credentials.get(key), str) and credentials[key]
+        for key in ("username", "clientkey")
     ):
-        _LOGGER.debug("Physical Hue setup stage=registration result=malformed_registration_response")
+        _LOGGER.debug(
+            "Physical Hue setup stage=registration result=malformed_registration_response"
+        )
         raise HueSetupError("malformed_registration_response")
 
     _LOGGER.debug("Physical Hue setup stage=credential_validation result=success")
@@ -122,23 +164,67 @@ async def async_pair_hue_entertainment(host: str) -> tuple[dict[str, str], list]
         _LOGGER.debug("Physical Hue setup stage=entertainment_area_discovery")
         areas = await discovery_api.get_entertainment_areas()
     except aiohttp.ClientResponseError as err:
-        result = "invalid_generated_credentials" if err.status in (401, 403) else "entertainment_api_initialization_failed"
-        _LOGGER.debug("Physical Hue setup stage=entertainment_area_discovery http_status=%d result=%s", err.status, result)
+        result = (
+            "invalid_generated_credentials"
+            if err.status in (401, 403)
+            else "entertainment_api_initialization_failed"
+        )
+        _LOGGER.debug(
+            "Physical Hue setup stage=entertainment_area_discovery http_status=%d result=%s",
+            err.status,
+            result,
+        )
         raise HueSetupError(result) from err
     except (aiohttp.ClientConnectionError, OSError) as err:
-        _LOGGER.debug("Physical Hue setup stage=entertainment_area_discovery result=bridge_unreachable: %s", type(err).__name__)
+        _LOGGER.debug(
+            "Physical Hue setup stage=entertainment_area_discovery result=bridge_unreachable: %s",
+            type(err).__name__,
+        )
         raise HueSetupError("bridge_unreachable") from err
     except Exception as err:  # noqa: BLE001 - never include credential data in UI/log messages
-        _LOGGER.debug("Physical Hue setup stage=entertainment_area_discovery result=entertainment_api_initialization_failed: %s", type(err).__name__)
+        _LOGGER.debug(
+            "Physical Hue setup stage=entertainment_area_discovery result=entertainment_api_initialization_failed: %s",
+            type(err).__name__,
+        )
         raise HueSetupError("entertainment_api_initialization_failed") from err
     finally:
         await discovery_api.close()
 
     if not areas:
-        _LOGGER.debug("Physical Hue setup stage=entertainment_area_discovery result=no_entertainment_areas")
+        _LOGGER.debug(
+            "Physical Hue setup stage=entertainment_area_discovery result=no_entertainment_areas"
+        )
         raise HueSetupError("no_entertainment_areas")
-    _LOGGER.debug("Physical Hue setup stage=entertainment_area_discovery result=success area_count=%d", len(areas))
+    _LOGGER.debug(
+        "Physical Hue setup stage=entertainment_area_discovery result=success area_count=%d",
+        len(areas),
+    )
     return credentials, areas
+
+
+async def async_test_hue_entertainment(host: str, app_key: str) -> int:
+    """Read-only authenticated CLIP v2 Entertainment Area check."""
+    HueEntertainmentAPI = _hue_api_type()
+
+    api = HueEntertainmentAPI(host, app_key)
+    try:
+        areas = await api.get_entertainment_areas()
+    except asyncio.TimeoutError as err:
+        raise HueSetupError("timeout") from err
+    except aiohttp.ClientResponseError as err:
+        raise HueSetupError(
+            "invalid_credentials" if err.status in (401, 403) else "unexpected_response"
+        ) from err
+    except (aiohttp.ClientConnectionError, OSError) as err:
+        raise HueSetupError("bridge_unreachable") from err
+    except Exception as err:
+        raise HueSetupError("unknown") from err
+    finally:
+        await api.close()
+    if not areas:
+        raise HueSetupError("no_entertainment_areas")
+    _LOGGER.debug("Physical Hue connection test succeeded: %d Entertainment Areas", len(areas))
+    return len(areas)
 
 
 def _is_ipv4(value: str) -> bool:
@@ -180,6 +266,7 @@ class HueEntertainmentConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):  # t
         self._input_mode = DEFAULT_INPUT_MODE
         self._tv: dict = {}
         self._hue_host = ""
+        self._hue_bridge_name = ""
         self._hue_credentials: dict[str, str] = {}
         self._hue_areas: list = []
         self._hue_area_id = ""
@@ -232,9 +319,15 @@ class HueEntertainmentConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):  # t
             data_schema=vol.Schema(
                 {
                     vol.Required(CONF_INPUT_MODE, default=DEFAULT_INPUT_MODE): SelectSelector(
-                        SelectSelectorConfig(options=[INPUT_LEGACY_HUESTREAM, INPUT_PHILIPS_JOINTSPACE], translation_key=CONF_INPUT_MODE, mode=SelectSelectorMode.DROPDOWN)
+                        SelectSelectorConfig(
+                            options=[INPUT_LEGACY_HUESTREAM, INPUT_PHILIPS_JOINTSPACE],
+                            translation_key=CONF_INPUT_MODE,
+                            mode=SelectSelectorMode.DROPDOWN,
+                        )
                     ),
-                    vol.Required(CONF_OUTPUT_BACKEND, default=DEFAULT_OUTPUT_BACKEND): SelectSelector(
+                    vol.Required(
+                        CONF_OUTPUT_BACKEND, default=DEFAULT_OUTPUT_BACKEND
+                    ): SelectSelector(
                         SelectSelectorConfig(
                             options=[BACKEND_HOME_ASSISTANT, BACKEND_HUE],
                             translation_key=CONF_OUTPUT_BACKEND,
@@ -253,6 +346,7 @@ class HueEntertainmentConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):  # t
         bridges = async_known_hue_bridges(self.hass)
         if len(bridges) == 1:
             self._hue_host = bridges[0].host
+            self._hue_bridge_name = bridges[0].name
             _LOGGER.debug("Selected existing Home Assistant Hue bridge")
             return await self.async_step_hue_pair()
         if user_input is not None:
@@ -261,17 +355,30 @@ class HueEntertainmentConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):  # t
                 return await self.async_step_hue_host()
             bridge = next(bridge for bridge in bridges if bridge.entry_id == selected)
             self._hue_host = bridge.host
+            self._hue_bridge_name = bridge.name
             _LOGGER.debug("Selected existing Home Assistant Hue bridge")
             return await self.async_step_hue_pair()
         if not bridges:
             return await self.async_step_hue_host()
         return self.async_show_form(
             step_id="hue_bridge",
-            data_schema=vol.Schema({vol.Required("ha_hue_bridge"): SelectSelector(
-                SelectSelectorConfig(options=[
-                    {"value": bridge.entry_id, "label": f"{bridge.name} ({bridge.host})"}
-                    for bridge in bridges
-                ] + [{"value": "manual", "label": "Enter a different Hue Bridge"}], mode=SelectSelectorMode.DROPDOWN))}),
+            data_schema=vol.Schema(
+                {
+                    vol.Required("ha_hue_bridge"): SelectSelector(
+                        SelectSelectorConfig(
+                            options=[
+                                {
+                                    "value": bridge.entry_id,
+                                    "label": f"{bridge.name} ({bridge.host})",
+                                }
+                                for bridge in bridges
+                            ]
+                            + [{"value": "manual", "label": "Enter a different Hue Bridge"}],
+                            mode=SelectSelectorMode.DROPDOWN,
+                        )
+                    )
+                }
+            ),
         )
 
     async def async_step_jointspace(self, user_input=None):
@@ -280,38 +387,80 @@ class HueEntertainmentConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):  # t
             self._tv = dict(user_input)
             try:
                 await async_validate_jointspace(
-                    async_get_clientsession(self.hass), self._tv[CONF_TV_HOST],
-                    self._tv[CONF_TV_USERNAME], self._tv[CONF_TV_PASSWORD],
-                    api_version=self._tv[CONF_TV_API_VERSION], port=self._tv[CONF_TV_PORT],
+                    async_get_clientsession(self.hass),
+                    self._tv[CONF_TV_HOST],
+                    self._tv[CONF_TV_USERNAME],
+                    self._tv[CONF_TV_PASSWORD],
+                    api_version=self._tv[CONF_TV_API_VERSION],
+                    port=self._tv[CONF_TV_PORT],
                     verify_ssl=self._tv[CONF_TV_VERIFY_SSL],
                 )
             except aiohttp.ClientResponseError as err:
-                return self.async_show_form(step_id="jointspace", data_schema=self._jointspace_schema(), errors={"base": "invalid_auth" if err.status in (401, 403) else "cannot_connect"})
+                return self.async_show_form(
+                    step_id="jointspace",
+                    data_schema=self._jointspace_schema(),
+                    errors={
+                        "base": "invalid_auth" if err.status in (401, 403) else "cannot_connect"
+                    },
+                )
             except aiohttp.ClientConnectorCertificateError:
-                return self.async_show_form(step_id="jointspace", data_schema=self._jointspace_schema(), errors={"base": "tls_error"})
+                return self.async_show_form(
+                    step_id="jointspace",
+                    data_schema=self._jointspace_schema(),
+                    errors={"base": "tls_error"},
+                )
             except asyncio.TimeoutError:
-                return self.async_show_form(step_id="jointspace", data_schema=self._jointspace_schema(), errors={"base": "timeout"})
+                return self.async_show_form(
+                    step_id="jointspace",
+                    data_schema=self._jointspace_schema(),
+                    errors={"base": "timeout"},
+                )
             except (aiohttp.ClientConnectionError, OSError):
-                return self.async_show_form(step_id="jointspace", data_schema=self._jointspace_schema(), errors={"base": "cannot_connect"})
+                return self.async_show_form(
+                    step_id="jointspace",
+                    data_schema=self._jointspace_schema(),
+                    errors={"base": "cannot_connect"},
+                )
             except ValueError:
-                return self.async_show_form(step_id="jointspace", data_schema=self._jointspace_schema(), errors={"base": "invalid_topology"})
+                return self.async_show_form(
+                    step_id="jointspace",
+                    data_schema=self._jointspace_schema(),
+                    errors={"base": "invalid_topology"},
+                )
             except Exception:
                 _LOGGER.debug("JointSpace validation failed", exc_info=True)
-                return self.async_show_form(step_id="jointspace", data_schema=self._jointspace_schema(), errors={"base": "unknown"})
+                return self.async_show_form(
+                    step_id="jointspace",
+                    data_schema=self._jointspace_schema(),
+                    errors={"base": "unknown"},
+                )
             if self._backend == BACKEND_HUE:
                 return await self.async_step_hue_bridge()
             return self._create_entry()
         return self.async_show_form(step_id="jointspace", data_schema=self._jointspace_schema())
 
     def _jointspace_schema(self):
-        return vol.Schema({
+        return vol.Schema(
+            {
                 vol.Required(CONF_TV_HOST, default=self._tv.get(CONF_TV_HOST, "")): TextSelector(),
-                vol.Required(CONF_TV_USERNAME, default=self._tv.get(CONF_TV_USERNAME, "")): TextSelector(),
-                vol.Required(CONF_TV_PASSWORD, default=self._tv.get(CONF_TV_PASSWORD, "")): TextSelector(),
-                vol.Optional(CONF_TV_API_VERSION, default=self._tv.get(CONF_TV_API_VERSION, DEFAULT_TV_API_VERSION)): vol.Coerce(int),
-                vol.Optional(CONF_TV_PORT, default=self._tv.get(CONF_TV_PORT, DEFAULT_TV_PORT)): vol.Coerce(int),
-                vol.Optional(CONF_TV_VERIFY_SSL, default=self._tv.get(CONF_TV_VERIFY_SSL, False)): BooleanSelector(),
-            })
+                vol.Required(
+                    CONF_TV_USERNAME, default=self._tv.get(CONF_TV_USERNAME, "")
+                ): TextSelector(),
+                vol.Required(
+                    CONF_TV_PASSWORD, default=self._tv.get(CONF_TV_PASSWORD, "")
+                ): TextSelector(),
+                vol.Optional(
+                    CONF_TV_API_VERSION,
+                    default=self._tv.get(CONF_TV_API_VERSION, DEFAULT_TV_API_VERSION),
+                ): vol.Coerce(int),
+                vol.Optional(
+                    CONF_TV_PORT, default=self._tv.get(CONF_TV_PORT, DEFAULT_TV_PORT)
+                ): vol.Coerce(int),
+                vol.Optional(
+                    CONF_TV_VERIFY_SSL, default=self._tv.get(CONF_TV_VERIFY_SSL, False)
+                ): BooleanSelector(),
+            }
+        )
 
     async def async_step_hue_host(self, user_input=None):
         """Collect the physical bridge host; pairing remains explicitly user initiated."""
@@ -325,7 +474,9 @@ class HueEntertainmentConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):  # t
                 return await self.async_step_hue_pair()
         return self.async_show_form(
             step_id="hue_host",
-            data_schema=vol.Schema({vol.Required(CONF_HUE_HOST, default=self._hue_host): TextSelector()}),
+            data_schema=vol.Schema(
+                {vol.Required(CONF_HUE_HOST, default=self._hue_host): TextSelector()}
+            ),
             errors=errors,
         )
 
@@ -336,7 +487,9 @@ class HueEntertainmentConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):  # t
             return self._create_entry()
         if user_input is not None:
             try:
-                self._hue_credentials, self._hue_areas = await async_pair_hue_entertainment(self._hue_host)
+                self._hue_credentials, self._hue_areas = await async_pair_hue_entertainment(
+                    self._hue_host
+                )
             except HueSetupError as err:
                 errors["base"] = err.error
             else:
@@ -344,9 +497,15 @@ class HueEntertainmentConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):  # t
                     errors["base"] = "no_entertainment_areas"
                 else:
                     return await self.async_step_hue_area()
-        return self.async_show_form(step_id="hue_pair", data_schema=vol.Schema({
-            vol.Optional("skip_hue_pairing", default=False): BooleanSelector(),
-        }), errors=errors)
+        return self.async_show_form(
+            step_id="hue_pair",
+            data_schema=vol.Schema(
+                {
+                    vol.Optional("skip_hue_pairing", default=False): BooleanSelector(),
+                }
+            ),
+            errors=errors,
+        )
 
     async def async_step_hue_area(self, user_input=None):
         """Select the real area's native channel layout for the virtual bridge."""
@@ -358,14 +517,18 @@ class HueEntertainmentConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):  # t
             return await self.async_step_pre_pairing()
         return self.async_show_form(
             step_id="hue_area",
-            data_schema=vol.Schema({
-                vol.Required(CONF_HUE_AREA_ID): SelectSelector(
-                    SelectSelectorConfig(
-                        options=[{"value": area.id, "label": area.name} for area in self._hue_areas],
-                        mode=SelectSelectorMode.DROPDOWN,
+            data_schema=vol.Schema(
+                {
+                    vol.Required(CONF_HUE_AREA_ID): SelectSelector(
+                        SelectSelectorConfig(
+                            options=[
+                                {"value": area.id, "label": area.name} for area in self._hue_areas
+                            ],
+                            mode=SelectSelectorMode.DROPDOWN,
+                        )
                     )
-                )
-            }),
+                }
+            ),
         )
 
     async def async_step_jointspace_mapping(self, user_input=None):
@@ -381,14 +544,19 @@ class HueEntertainmentConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):  # t
         return self.async_show_form(
             step_id="jointspace_mapping",
             description_placeholders={
-                "name": channel.name, "channel_id": str(channel.channel_id),
+                "name": channel.name,
+                "channel_id": str(channel.channel_id),
                 "position": "x={:.2f}, y={:.2f}, z={:.2f}".format(*channel.position),
             },
-            data_schema=vol.Schema({
-                vol.Required("tv_mapping", default="auto"): SelectSelector(
-                    SelectSelectorConfig(options=list(TV_RELATIVE_POSITIONS), mode=SelectSelectorMode.DROPDOWN)
-                )
-            }),
+            data_schema=vol.Schema(
+                {
+                    vol.Required("tv_mapping", default="auto"): SelectSelector(
+                        SelectSelectorConfig(
+                            options=list(TV_RELATIVE_POSITIONS), mode=SelectSelectorMode.DROPDOWN
+                        )
+                    )
+                }
+            ),
         )
 
     async def async_step_pre_pairing(self, user_input=None):
@@ -483,16 +651,25 @@ class HueEntertainmentConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):  # t
             data[CONF_TV_CHANNEL_MAPPINGS] = self._tv_channel_mappings
         if self._backend == BACKEND_HUE and self._hue_credentials:
             area = next(area for area in self._hue_areas if area.id == self._hue_area_id)
-            data.update({
-                CONF_HUE_HOST: self._hue_host,
-                CONF_HUE_APP_KEY: self._hue_credentials["username"],
-                CONF_HUE_CLIENT_KEY: self._hue_credentials["clientkey"],
-                CONF_HUE_AREA_ID: area.id,
-                CONF_HUE_AREA_CHANNELS: [
-                    {"channel_id": channel.channel_id, "name": channel.name, "position": list(channel.position), "tv_mapping": self._tv_channel_mappings.get(str(index), "auto")}
-                    for index, channel in enumerate(area.channels, 1)
-                ],
-            })
+            data.update(
+                {
+                    CONF_HUE_HOST: self._hue_host,
+                    CONF_HUE_BRIDGE_NAME: self._hue_bridge_name or f"Hue Bridge ({self._hue_host})",
+                    CONF_HUE_APP_KEY: self._hue_credentials["username"],
+                    CONF_HUE_CLIENT_KEY: self._hue_credentials["clientkey"],
+                    CONF_HUE_AREA_ID: area.id,
+                    CONF_HUE_AREA_NAME: area.name or f"Entertainment Area ({area.id[:8]})",
+                    CONF_HUE_AREA_CHANNELS: [
+                        {
+                            "channel_id": channel.channel_id,
+                            "name": channel.name,
+                            "position": list(channel.position),
+                            "tv_mapping": self._tv_channel_mappings.get(str(index), "auto"),
+                        }
+                        for index, channel in enumerate(area.channels, 1)
+                    ],
+                }
+            )
         return self.async_create_entry(
             title="Hue Entertainment Bridge",
             data=data,
@@ -509,7 +686,9 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
         self._http_mode: str = DEFAULT_HTTP_MODE
         self._backend: str = DEFAULT_OUTPUT_BACKEND
         self._hue_host: str = ""
+        self._hue_bridge_name: str = ""
         self._hue_area_id: str = ""
+        self._hue_area_name: str = ""
         self._hue_channels: list[dict] = []
         self._hue_credentials: dict[str, str] = {}
         self._hue_areas: list = []
@@ -524,8 +703,10 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
         input_mode = self.config_entry.options.get(
             CONF_INPUT_MODE, self.config_entry.data.get(CONF_INPUT_MODE, DEFAULT_INPUT_MODE)
         )
+        self._input_mode = input_mode
         backend = self.config_entry.options.get(
-            CONF_OUTPUT_BACKEND, self.config_entry.data.get(CONF_OUTPUT_BACKEND, DEFAULT_OUTPUT_BACKEND)
+            CONF_OUTPUT_BACKEND,
+            self.config_entry.data.get(CONF_OUTPUT_BACKEND, DEFAULT_OUTPUT_BACKEND),
         )
         configured = self.config_entry.options.get(
             CONF_OUTPUT_CONFIGURED, self.config_entry.data.get(CONF_OUTPUT_CONFIGURED, True)
@@ -550,13 +731,39 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
             channels = current(CONF_HUE_AREA_CHANNELS, [])
             return self.async_show_form(
                 step_id="init",
-                data_schema=vol.Schema({vol.Required("management_action", default="hue" if not configured else "tv"): SelectSelector(
-                    SelectSelectorConfig(options=[
-                        {"value": "tv", "label": "TV / JointSpace"}, {"value": "hue", "label": "Philips Hue Bridge"},
-                        {"value": "area", "label": "Entertainment Area"}, {"value": "mapping", "label": "Ambilight mapping"},
-                        {"value": "performance", "label": "Performance"}, {"value": "reauthorize", "label": "Re-authorize Hue Bridge"},
-                    ], mode=SelectSelectorMode.DROPDOWN))}),
-                description_placeholders={"hue_status": "Connected" if configured else "Not configured", "tv_host": str(current(CONF_TV_HOST, "Unavailable")), "hue_host": str(current(CONF_HUE_HOST, "Not configured")), "area": str(current(CONF_HUE_AREA_ID, "Not configured")), "channels": str(len(channels))},
+                data_schema=vol.Schema(
+                    {
+                        vol.Required(
+                            "management_action", default="hue" if not configured else "tv"
+                        ): SelectSelector(
+                            SelectSelectorConfig(
+                                options=[
+                                    {"value": "tv", "label": "TV / JointSpace"},
+                                    {"value": "hue", "label": "Philips Hue Bridge"},
+                                    {"value": "area", "label": "Entertainment Area"},
+                                    {"value": "mapping", "label": "Ambilight mapping"},
+                                    {"value": "performance", "label": "Performance"},
+                                    {"value": "reauthorize", "label": "Re-authorize Hue Bridge"},
+                                ],
+                                mode=SelectSelectorMode.DROPDOWN,
+                            )
+                        )
+                    }
+                ),
+                description_placeholders={
+                    "hue_status": "Connected" if configured else "Not configured",
+                    "tv_host": str(current(CONF_TV_HOST, "Unavailable")),
+                    "hue_host": str(
+                        current(
+                            CONF_HUE_BRIDGE_NAME,
+                            f"Hue Bridge ({current(CONF_HUE_HOST, 'Not configured')})",
+                        )
+                    ),
+                    "area": str(
+                        current(CONF_HUE_AREA_NAME, current(CONF_HUE_AREA_ID, "Not configured"))
+                    ),
+                    "channels": str(len(channels)),
+                },
             )
         errors: dict[str, str] = {}
         if user_input is not None:
@@ -580,18 +787,55 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
         current_lights = self.config_entry.options.get(
             CONF_LIGHTS, self.config_entry.data.get(CONF_LIGHTS, [])
         )
-        current_bind_ip = self.config_entry.options.get(CONF_BIND_IP, self.config_entry.data.get(CONF_BIND_IP, "")) or ""
-        current_mode = self.config_entry.options.get(CONF_HTTP_MODE, self.config_entry.data.get(CONF_HTTP_MODE, DEFAULT_HTTP_MODE))
-        current_backend = self.config_entry.options.get(CONF_OUTPUT_BACKEND, self.config_entry.data.get(CONF_OUTPUT_BACKEND, DEFAULT_OUTPUT_BACKEND))
+        current_bind_ip = (
+            self.config_entry.options.get(
+                CONF_BIND_IP, self.config_entry.data.get(CONF_BIND_IP, "")
+            )
+            or ""
+        )
+        current_mode = self.config_entry.options.get(
+            CONF_HTTP_MODE, self.config_entry.data.get(CONF_HTTP_MODE, DEFAULT_HTTP_MODE)
+        )
+        current_backend = self.config_entry.options.get(
+            CONF_OUTPUT_BACKEND,
+            self.config_entry.data.get(CONF_OUTPUT_BACKEND, DEFAULT_OUTPUT_BACKEND),
+        )
         if user_input is not None:
-            current_lights, current_bind_ip = user_input[CONF_LIGHTS], user_input.get(CONF_BIND_IP, "")
-            current_mode, current_backend = user_input.get(CONF_HTTP_MODE, current_mode), user_input.get(CONF_OUTPUT_BACKEND, current_backend)
-        return self.async_show_form(step_id="init", data_schema=vol.Schema({
-            vol.Required(CONF_OUTPUT_BACKEND, default=current_backend): SelectSelector(SelectSelectorConfig(options=[BACKEND_HOME_ASSISTANT, BACKEND_HUE], translation_key=CONF_OUTPUT_BACKEND, mode=SelectSelectorMode.DROPDOWN)),
-            vol.Required(CONF_LIGHTS, default=current_lights): EntitySelector(EntitySelectorConfig(domain="light", multiple=True)),
-            vol.Optional(CONF_PAIR_NOW, default=False): BooleanSelector(), vol.Optional(CONF_BIND_IP, default=current_bind_ip): TextSelector(),
-            vol.Optional(CONF_HTTP_MODE, default=current_mode): SelectSelector(SelectSelectorConfig(options=[HTTP_MODE_AUTO, HTTP_MODE_STANDALONE, HTTP_MODE_HOMEASSISTANT], translation_key=CONF_HTTP_MODE, mode=SelectSelectorMode.DROPDOWN)),
-        }), errors=errors)
+            current_lights, current_bind_ip = (
+                user_input[CONF_LIGHTS],
+                user_input.get(CONF_BIND_IP, ""),
+            )
+            current_mode, current_backend = (
+                user_input.get(CONF_HTTP_MODE, current_mode),
+                user_input.get(CONF_OUTPUT_BACKEND, current_backend),
+            )
+        return self.async_show_form(
+            step_id="init",
+            data_schema=vol.Schema(
+                {
+                    vol.Required(CONF_OUTPUT_BACKEND, default=current_backend): SelectSelector(
+                        SelectSelectorConfig(
+                            options=[BACKEND_HOME_ASSISTANT, BACKEND_HUE],
+                            translation_key=CONF_OUTPUT_BACKEND,
+                            mode=SelectSelectorMode.DROPDOWN,
+                        )
+                    ),
+                    vol.Required(CONF_LIGHTS, default=current_lights): EntitySelector(
+                        EntitySelectorConfig(domain="light", multiple=True)
+                    ),
+                    vol.Optional(CONF_PAIR_NOW, default=False): BooleanSelector(),
+                    vol.Optional(CONF_BIND_IP, default=current_bind_ip): TextSelector(),
+                    vol.Optional(CONF_HTTP_MODE, default=current_mode): SelectSelector(
+                        SelectSelectorConfig(
+                            options=[HTTP_MODE_AUTO, HTTP_MODE_STANDALONE, HTTP_MODE_HOMEASSISTANT],
+                            translation_key=CONF_HTTP_MODE,
+                            mode=SelectSelectorMode.DROPDOWN,
+                        )
+                    ),
+                }
+            ),
+            errors=errors,
+        )
 
     def _current(self, key, default=None):
         """Read options first so existing entries gain management without migration."""
@@ -608,93 +852,247 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
             if not tv[CONF_TV_PASSWORD]:
                 tv[CONF_TV_PASSWORD] = self._current(CONF_TV_PASSWORD, "")
             try:
-                await async_validate_jointspace(async_get_clientsession(self.hass), tv[CONF_TV_HOST], tv[CONF_TV_USERNAME], tv[CONF_TV_PASSWORD], api_version=tv[CONF_TV_API_VERSION], port=tv[CONF_TV_PORT], verify_ssl=tv[CONF_TV_VERIFY_SSL])
+                await async_validate_jointspace(
+                    async_get_clientsession(self.hass),
+                    tv[CONF_TV_HOST],
+                    tv[CONF_TV_USERNAME],
+                    tv[CONF_TV_PASSWORD],
+                    api_version=tv[CONF_TV_API_VERSION],
+                    port=tv[CONF_TV_PORT],
+                    verify_ssl=tv[CONF_TV_VERIFY_SSL],
+                )
             except Exception:  # noqa: BLE001
                 _LOGGER.debug("JointSpace options validation failed", exc_info=True)
                 errors["base"] = "cannot_connect"
             else:
-                options = self._saved_options(); options.update(tv)
+                options = self._saved_options()
+                options.update(tv)
                 return self.async_create_entry(title="", data=options)
-        return self.async_show_form(step_id="jointspace_options", data_schema=vol.Schema({
-            vol.Required(CONF_TV_HOST, default=self._current(CONF_TV_HOST, "")): TextSelector(),
-            vol.Required(CONF_TV_USERNAME, default=self._current(CONF_TV_USERNAME, "")): TextSelector(),
-            vol.Optional(CONF_TV_PASSWORD, default=""): TextSelector(),
-            vol.Optional(CONF_TV_API_VERSION, default=self._current(CONF_TV_API_VERSION, DEFAULT_TV_API_VERSION)): vol.Coerce(int),
-            vol.Optional(CONF_TV_PORT, default=self._current(CONF_TV_PORT, DEFAULT_TV_PORT)): vol.Coerce(int),
-            vol.Optional(CONF_TV_VERIFY_SSL, default=self._current(CONF_TV_VERIFY_SSL, False)): BooleanSelector(),
-        }), errors=errors)
+        return self.async_show_form(
+            step_id="jointspace_options",
+            data_schema=vol.Schema(
+                {
+                    vol.Required(
+                        CONF_TV_HOST, default=self._current(CONF_TV_HOST, "")
+                    ): TextSelector(),
+                    vol.Required(
+                        CONF_TV_USERNAME, default=self._current(CONF_TV_USERNAME, "")
+                    ): TextSelector(),
+                    vol.Optional(CONF_TV_PASSWORD, default=""): TextSelector(),
+                    vol.Optional(
+                        CONF_TV_API_VERSION,
+                        default=self._current(CONF_TV_API_VERSION, DEFAULT_TV_API_VERSION),
+                    ): vol.Coerce(int),
+                    vol.Optional(
+                        CONF_TV_PORT, default=self._current(CONF_TV_PORT, DEFAULT_TV_PORT)
+                    ): vol.Coerce(int),
+                    vol.Optional(
+                        CONF_TV_VERIFY_SSL, default=self._current(CONF_TV_VERIFY_SSL, False)
+                    ): BooleanSelector(),
+                }
+            ),
+            errors=errors,
+        )
 
     async def async_step_hue_manage(self, user_input=None):
         if user_input and user_input["hue_action"] == "reauthorize":
             return await self.async_step_hue_setup_bridge()
         if user_input and user_input["hue_action"] == "change":
             return await self.async_step_hue_setup_bridge()
-        return self.async_show_form(step_id="hue_manage", data_schema=vol.Schema({vol.Required("hue_action", default="test"): SelectSelector(SelectSelectorConfig(options=[{"value":"test", "label":"Test connection"}, {"value":"change", "label":"Change Hue Bridge"}, {"value":"reauthorize", "label":"Re-authorize Hue Entertainment"}], mode=SelectSelectorMode.DROPDOWN))}), description_placeholders={"host": str(self._current(CONF_HUE_HOST, "Not configured")), "area": str(self._current(CONF_HUE_AREA_ID, "Not configured"))})
+        if user_input and user_input["hue_action"] == "test":
+            try:
+                count = await async_test_hue_entertainment(
+                    self._current(CONF_HUE_HOST, ""), self._current(CONF_HUE_APP_KEY, "")
+                )
+                return self.async_show_form(
+                    step_id="hue_manage",
+                    data_schema=vol.Schema({}),
+                    description_placeholders={
+                        "host": self._current(
+                            CONF_HUE_BRIDGE_NAME, f"Hue Bridge ({self._current(CONF_HUE_HOST, '')})"
+                        ),
+                        "area": self._current(
+                            CONF_HUE_AREA_NAME, self._current(CONF_HUE_AREA_ID, "")
+                        ),
+                        "result": f"Connection successful ({count} Entertainment Areas)",
+                    },
+                )
+            except HueSetupError as err:
+                return self.async_show_form(
+                    step_id="hue_manage", data_schema=vol.Schema({}), errors={"base": err.error}
+                )
+        return self.async_show_form(
+            step_id="hue_manage",
+            data_schema=vol.Schema(
+                {
+                    vol.Required("hue_action", default="test"): SelectSelector(
+                        SelectSelectorConfig(
+                            options=[
+                                {"value": "test", "label": "Test connection"},
+                                {"value": "change", "label": "Change Hue Bridge"},
+                                {"value": "reauthorize", "label": "Re-authorize Hue Entertainment"},
+                            ],
+                            mode=SelectSelectorMode.DROPDOWN,
+                        )
+                    )
+                }
+            ),
+            description_placeholders={
+                "host": str(
+                    self._current(
+                        CONF_HUE_BRIDGE_NAME,
+                        f"Hue Bridge ({self._current(CONF_HUE_HOST, 'Not configured')})",
+                    )
+                ),
+                "area": str(
+                    self._current(
+                        CONF_HUE_AREA_NAME,
+                        f"Entertainment Area ({str(self._current(CONF_HUE_AREA_ID, 'unknown'))[:8]})",
+                    )
+                ),
+            },
+        )
 
     async def async_step_performance(self, user_input=None):
         if user_input is not None:
-            options = self._saved_options(); options.update(user_input)
+            options = self._saved_options()
+            options.update(user_input)
             return self.async_create_entry(title="", data=options)
-        return self.async_show_form(step_id="performance", data_schema=vol.Schema({
-            vol.Optional(CONF_TV_POLL_FPS, default=self._current(CONF_TV_POLL_FPS, 10)): vol.Coerce(int),
-            vol.Optional(CONF_BRIGHTNESS_MULTIPLIER, default=self._current(CONF_BRIGHTNESS_MULTIPLIER, 1.0)): vol.Coerce(float),
-            vol.Optional(CONF_SATURATION_MULTIPLIER, default=self._current(CONF_SATURATION_MULTIPLIER, 1.0)): vol.Coerce(float),
-            vol.Optional(CONF_TV_INACTIVITY_TIMEOUT, default=self._current(CONF_TV_INACTIVITY_TIMEOUT, 5.0)): vol.Coerce(float),
-            vol.Optional(CONF_REVERSE_LEFT, default=self._current(CONF_REVERSE_LEFT, False)): BooleanSelector(), vol.Optional(CONF_REVERSE_RIGHT, default=self._current(CONF_REVERSE_RIGHT, False)): BooleanSelector(), vol.Optional(CONF_REVERSE_TOP, default=self._current(CONF_REVERSE_TOP, False)): BooleanSelector(), vol.Optional(CONF_REVERSE_BOTTOM, default=self._current(CONF_REVERSE_BOTTOM, False)): BooleanSelector(),
-        }))
+        return self.async_show_form(
+            step_id="performance",
+            data_schema=vol.Schema(
+                {
+                    vol.Optional(
+                        CONF_TV_POLL_FPS, default=self._current(CONF_TV_POLL_FPS, 10)
+                    ): vol.Coerce(int),
+                    vol.Optional(
+                        CONF_BRIGHTNESS_MULTIPLIER,
+                        default=self._current(CONF_BRIGHTNESS_MULTIPLIER, 1.0),
+                    ): vol.Coerce(float),
+                    vol.Optional(
+                        CONF_SATURATION_MULTIPLIER,
+                        default=self._current(CONF_SATURATION_MULTIPLIER, 1.0),
+                    ): vol.Coerce(float),
+                    vol.Optional(
+                        CONF_TV_INACTIVITY_TIMEOUT,
+                        default=self._current(CONF_TV_INACTIVITY_TIMEOUT, 5.0),
+                    ): vol.Coerce(float),
+                    vol.Optional(
+                        CONF_REVERSE_LEFT, default=self._current(CONF_REVERSE_LEFT, False)
+                    ): BooleanSelector(),
+                    vol.Optional(
+                        CONF_REVERSE_RIGHT, default=self._current(CONF_REVERSE_RIGHT, False)
+                    ): BooleanSelector(),
+                    vol.Optional(
+                        CONF_REVERSE_TOP, default=self._current(CONF_REVERSE_TOP, False)
+                    ): BooleanSelector(),
+                    vol.Optional(
+                        CONF_REVERSE_BOTTOM, default=self._current(CONF_REVERSE_BOTTOM, False)
+                    ): BooleanSelector(),
+                }
+            ),
+        )
+
     async def async_step_hue_setup_bridge(self, user_input=None):
         """Continue a deferred physical Hue setup without touching TV settings."""
         bridges = async_known_hue_bridges(self.hass)
         if len(bridges) == 1:
             self._hue_host = bridges[0].host
+            self._hue_bridge_name = bridges[0].name
             return await self.async_step_hue_setup_pair()
         if user_input is not None:
             selected = user_input["ha_hue_bridge"]
             if selected == "manual":
                 return await self.async_step_hue_setup_host()
             self._hue_host = next(b.host for b in bridges if b.entry_id == selected)
+            self._hue_bridge_name = next(b.name for b in bridges if b.entry_id == selected)
             return await self.async_step_hue_setup_pair()
         if not bridges:
             return await self.async_step_hue_setup_host()
-        return self.async_show_form(step_id="hue_setup_bridge", data_schema=vol.Schema({
-            vol.Required("ha_hue_bridge"): SelectSelector(SelectSelectorConfig(options=[
-                {"value": b.entry_id, "label": f"{b.name} ({b.host})"} for b in bridges
-            ] + [{"value": "manual", "label": "Enter a different Hue Bridge"}], mode=SelectSelectorMode.DROPDOWN))
-        }))
+        return self.async_show_form(
+            step_id="hue_setup_bridge",
+            data_schema=vol.Schema(
+                {
+                    vol.Required("ha_hue_bridge"): SelectSelector(
+                        SelectSelectorConfig(
+                            options=[
+                                {"value": b.entry_id, "label": f"{b.name} ({b.host})"}
+                                for b in bridges
+                            ]
+                            + [{"value": "manual", "label": "Enter a different Hue Bridge"}],
+                            mode=SelectSelectorMode.DROPDOWN,
+                        )
+                    )
+                }
+            ),
+        )
 
     async def async_step_hue_setup_host(self, user_input=None):
         if user_input is not None:
             self._hue_host = str(user_input[CONF_HUE_HOST]).strip()
             if self._hue_host:
                 return await self.async_step_hue_setup_pair()
-        return self.async_show_form(step_id="hue_setup_host", data_schema=vol.Schema({vol.Required(CONF_HUE_HOST, default=self._hue_host): TextSelector()}))
+        return self.async_show_form(
+            step_id="hue_setup_host",
+            data_schema=vol.Schema(
+                {vol.Required(CONF_HUE_HOST, default=self._hue_host): TextSelector()}
+            ),
+        )
 
     async def async_step_hue_setup_pair(self, user_input=None):
         errors = {}
         if user_input is not None:
             try:
-                self._hue_credentials, self._hue_areas = await async_pair_hue_entertainment(self._hue_host)
+                self._hue_credentials, self._hue_areas = await async_pair_hue_entertainment(
+                    self._hue_host
+                )
                 return await self.async_step_hue_setup_area()
             except HueSetupError as err:
                 errors["base"] = err.error
-        return self.async_show_form(step_id="hue_setup_pair", data_schema=vol.Schema({}), errors=errors)
+        return self.async_show_form(
+            step_id="hue_setup_pair", data_schema=vol.Schema({}), errors=errors
+        )
 
     async def async_step_hue_setup_area(self, user_input=None):
         if user_input is not None:
             area = next(area for area in self._hue_areas if area.id == user_input[CONF_HUE_AREA_ID])
             options = dict(self.config_entry.options)
-            options.update({
-                CONF_HUE_HOST: self._hue_host, CONF_HUE_APP_KEY: self._hue_credentials["username"],
-                CONF_HUE_CLIENT_KEY: self._hue_credentials["clientkey"], CONF_HUE_AREA_ID: area.id,
-                CONF_HUE_AREA_CHANNELS: [{"channel_id": c.channel_id, "name": c.name, "position": list(c.position), "tv_mapping": "auto"} for c in area.channels],
-                CONF_OUTPUT_CONFIGURED: True,
-            })
+            options.update(
+                {
+                    CONF_HUE_HOST: self._hue_host,
+                    CONF_HUE_APP_KEY: self._hue_credentials["username"],
+                    CONF_HUE_CLIENT_KEY: self._hue_credentials["clientkey"],
+                    CONF_HUE_AREA_ID: area.id,
+                    CONF_HUE_BRIDGE_NAME: self._hue_bridge_name or f"Hue Bridge ({self._hue_host})",
+                    CONF_HUE_AREA_NAME: area.name or f"Entertainment Area ({area.id[:8]})",
+                    CONF_HUE_AREA_CHANNELS: [
+                        {
+                            "channel_id": c.channel_id,
+                            "name": c.name,
+                            "position": list(c.position),
+                            "tv_mapping": "auto",
+                        }
+                        for c in area.channels
+                    ],
+                    CONF_OUTPUT_CONFIGURED: True,
+                }
+            )
             return self.async_create_entry(title="", data=options)
-        return self.async_show_form(step_id="hue_setup_area", data_schema=vol.Schema({
-            vol.Required(CONF_HUE_AREA_ID): SelectSelector(SelectSelectorConfig(options=[
-                {"value": area.id, "label": area.name} for area in self._hue_areas
-            ], mode=SelectSelectorMode.DROPDOWN))
-        }))
+        return self.async_show_form(
+            step_id="hue_setup_area",
+            data_schema=vol.Schema(
+                {
+                    vol.Required(CONF_HUE_AREA_ID): SelectSelector(
+                        SelectSelectorConfig(
+                            options=[
+                                {"value": area.id, "label": area.name} for area in self._hue_areas
+                            ],
+                            mode=SelectSelectorMode.DROPDOWN,
+                        )
+                    )
+                }
+            ),
+        )
 
     async def async_step_hue_options(self, user_input=None):
         """Select another physical area without recreating the virtual bridge."""
@@ -708,14 +1106,27 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
             else:
                 try:
                     from hue_entertainment import HueEntertainmentAPI
+
                     api = HueEntertainmentAPI(self._hue_host, app_key)
                     try:
                         areas = await api.get_entertainment_areas()
                     finally:
                         await api.close()
                     area = next(area for area in areas if area.id == self._hue_area_id)
-                    old = {item.get("channel_id"): item.get("tv_mapping", "auto") for item in self._current(CONF_HUE_AREA_CHANNELS, [])}
-                    self._hue_channels = [{"channel_id": channel.channel_id, "name": channel.name, "position": list(channel.position), "tv_mapping": old.get(channel.channel_id, "auto")} for channel in area.channels]
+                    self._hue_area_name = area.name or f"Entertainment Area ({area.id[:8]})"
+                    old = {
+                        item.get("channel_id"): item.get("tv_mapping", "auto")
+                        for item in self._current(CONF_HUE_AREA_CHANNELS, [])
+                    }
+                    self._hue_channels = [
+                        {
+                            "channel_id": channel.channel_id,
+                            "name": channel.name,
+                            "position": list(channel.position),
+                            "tv_mapping": old.get(channel.channel_id, "auto"),
+                        }
+                        for channel in area.channels
+                    ]
                 except Exception:  # noqa: BLE001
                     _LOGGER.debug("Could not load physical Hue Entertainment Areas", exc_info=True)
                     errors["base"] = "hue_unreachable"
@@ -729,6 +1140,7 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
             self._hue_host = self._current(CONF_HUE_HOST, "")
         try:
             from hue_entertainment import HueEntertainmentAPI
+
             api = HueEntertainmentAPI(self._hue_host, app_key)
             try:
                 areas = await api.get_entertainment_areas()
@@ -744,15 +1156,17 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
         )
         return self.async_show_form(
             step_id="hue_options",
-            data_schema=vol.Schema({
-                vol.Required(CONF_HUE_HOST, default=self._hue_host): TextSelector(),
-                vol.Required(CONF_HUE_AREA_ID, default=current_area): SelectSelector(
-                    SelectSelectorConfig(
-                        options=[{"value": area.id, "label": area.name} for area in areas],
-                        mode=SelectSelectorMode.DROPDOWN,
-                    )
-                ),
-            }),
+            data_schema=vol.Schema(
+                {
+                    vol.Required(CONF_HUE_HOST, default=self._hue_host): TextSelector(),
+                    vol.Required(CONF_HUE_AREA_ID, default=current_area): SelectSelector(
+                        SelectSelectorConfig(
+                            options=[{"value": area.id, "label": area.name} for area in areas],
+                            mode=SelectSelectorMode.DROPDOWN,
+                        )
+                    ),
+                }
+            ),
             errors=errors,
         )
 
@@ -772,11 +1186,27 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
         )
         return self.async_show_form(
             step_id="jointspace_mapping_options",
-            description_placeholders={"name": channel.get("name", "Channel"),
+            description_placeholders={
+                "name": channel.get("name", "Channel"),
                 "channel_id": str(channel.get("channel_id", "")),
-                "position": "x={:.2f}, y={:.2f}, z={:.2f}".format(*channel.get("position", (0, 0, 0)))},
-            data_schema=vol.Schema({vol.Required("tv_mapping", default=defaults.get(str(self._mapping_index + 1), channel.get("tv_mapping", "auto"))): SelectSelector(
-                SelectSelectorConfig(options=list(TV_RELATIVE_POSITIONS), mode=SelectSelectorMode.DROPDOWN))}),
+                "position": "x={:.2f}, y={:.2f}, z={:.2f}".format(
+                    *channel.get("position", (0, 0, 0))
+                ),
+            },
+            data_schema=vol.Schema(
+                {
+                    vol.Required(
+                        "tv_mapping",
+                        default=defaults.get(
+                            str(self._mapping_index + 1), channel.get("tv_mapping", "auto")
+                        ),
+                    ): SelectSelector(
+                        SelectSelectorConfig(
+                            options=list(TV_RELATIVE_POSITIONS), mode=SelectSelectorMode.DROPDOWN
+                        )
+                    )
+                }
+            ),
         )
 
     def _options(self) -> dict:
@@ -793,6 +1223,8 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
             options[CONF_OUTPUT_BACKEND] = BACKEND_HUE
             options[CONF_HUE_HOST] = self._hue_host
             options[CONF_HUE_AREA_ID] = self._hue_area_id
+            if self._hue_area_name:
+                options[CONF_HUE_AREA_NAME] = self._hue_area_name
             options[CONF_HUE_AREA_CHANNELS] = self._hue_channels
         if self._tv_channel_mappings:
             options[CONF_TV_CHANNEL_MAPPINGS] = self._tv_channel_mappings

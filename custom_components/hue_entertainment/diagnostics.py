@@ -4,13 +4,60 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from homeassistant.components.diagnostics import async_redact_data
 from homeassistant.core import HomeAssistant
 
 if TYPE_CHECKING:
     from . import HueEntertainmentConfigEntry
 
-TO_REDACT = {"clientkey", "initial_users", "hue_app_key", "hue_client_key", "tv_username", "tv_password"}
+TO_REDACT = frozenset(
+    {
+        "clientkey",
+        "initial_users",
+        "hue_app_key",
+        "hue_client_key",
+        "tv_username",
+        "tv_password",
+        "username",
+        "password",
+        "authorization",
+        "token",
+        "access_token",
+        "refresh_token",
+        "api_key",
+        "app_key",
+        "psk",
+    }
+)
+
+
+def redact_diagnostics(value: Any, key: str = "") -> Any:
+    """Copy diagnostic data while recursively redacting credential material."""
+    normalized = key.lower().replace("-", "_")
+    sensitive = normalized in TO_REDACT or any(
+        part in normalized
+        for part in (
+            "password",
+            "clientkey",
+            "credential",
+            "authorization",
+            "token",
+            "secret",
+            "api_key",
+            "app_key",
+            "psk",
+        )
+    )
+    if sensitive:
+        return "**REDACTED**"
+    if isinstance(value, dict):
+        return {
+            item_key: redact_diagnostics(item, str(item_key)) for item_key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [redact_diagnostics(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(redact_diagnostics(item) for item in value)
+    return value
 
 
 async def async_get_config_entry_diagnostics(
@@ -20,8 +67,8 @@ async def async_get_config_entry_diagnostics(
     data = entry.runtime_data
     return {
         "entry": {
-            "data": async_redact_data(dict(entry.data), TO_REDACT),
-            "options": dict(entry.options),
+            "data": redact_diagnostics(dict(entry.data)),
+            "options": redact_diagnostics(dict(entry.options)),
         },
         "bridge": {
             "bridge_id": data.bridge_id,

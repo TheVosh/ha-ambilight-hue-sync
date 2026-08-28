@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import sys
+from copy import deepcopy
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -24,30 +25,91 @@ from homeassistant.helpers import entity_registry as er  # noqa: E402
 from pytest_homeassistant_custom_component.common import MockConfigEntry  # noqa: E402
 
 from custom_components.hue_entertainment import const  # noqa: E402
-from custom_components.hue_entertainment.const import (  # noqa: E402
-    CONF_API_PORT,
-    CONF_BIND_IP,
-    CONF_BRIDGE_ID,
-    CONF_ENTERTAINMENT_PORT,
-    CONF_LIGHTS,
-    CONF_PAIR_NOW,
-    CONF_INPUT_MODE,
-    CONF_TV_HOST,
-    CONF_TV_USERNAME,
-    CONF_TV_PASSWORD,
-    CONF_TV_API_VERSION,
-    CONF_TV_PORT,
-    CONF_TV_VERIFY_SSL,
-    INPUT_PHILIPS_JOINTSPACE,
-    DOMAIN,
-)
 from custom_components.hue_entertainment.config_flow import (  # noqa: E402
     HueSetupError,
     async_pair_hue_entertainment,
 )
+from custom_components.hue_entertainment.const import (  # noqa: E402
+    BACKEND_HOME_ASSISTANT,
+    BACKEND_HUE,
+    CONF_API_PORT,
+    CONF_BIND_IP,
+    CONF_BRIDGE_ID,
+    CONF_BRIGHTNESS_MULTIPLIER,
+    CONF_ENTERTAINMENT_PORT,
+    CONF_HUE_APP_KEY,
+    CONF_HUE_AREA_CHANNELS,
+    CONF_HUE_AREA_ID,
+    CONF_HUE_AREA_NAME,
+    CONF_HUE_BRIDGE_NAME,
+    CONF_HUE_CLIENT_KEY,
+    CONF_HUE_HOST,
+    CONF_INPUT_MODE,
+    CONF_LIGHTS,
+    CONF_OUTPUT_BACKEND,
+    CONF_OUTPUT_CONFIGURED,
+    CONF_PAIR_NOW,
+    CONF_TV_API_VERSION,
+    CONF_TV_CHANNEL_MAPPINGS,
+    CONF_TV_HOST,
+    CONF_TV_PASSWORD,
+    CONF_TV_POLL_FPS,
+    CONF_TV_PORT,
+    CONF_TV_USERNAME,
+    CONF_TV_VERIFY_SSL,
+    DEFAULT_INPUT_MODE,
+    DEFAULT_OUTPUT_BACKEND,
+    DOMAIN,
+    INPUT_LEGACY_HUESTREAM,
+    INPUT_PHILIPS_JOINTSPACE,
+)
 
 BRIDGE_ID = "001788FFFE0AB1C2"
 LIGHTS = ["light.a", "light.b"]
+
+
+def _configured_jointspace_hue_entry() -> MockConfigEntry:
+    """Return a complete synthetic modern-mode entry for options-flow tests."""
+    return MockConfigEntry(
+        domain=DOMAIN,
+        title="Synthetic",
+        data={
+            CONF_BRIDGE_ID: BRIDGE_ID,
+            CONF_INPUT_MODE: INPUT_PHILIPS_JOINTSPACE,
+            CONF_OUTPUT_BACKEND: BACKEND_HUE,
+            CONF_OUTPUT_CONFIGURED: True,
+            CONF_TV_HOST: "synthetic-tv",
+            CONF_TV_USERNAME: "synthetic-user",
+            CONF_TV_PASSWORD: "synthetic-password",
+            CONF_TV_API_VERSION: 6,
+            CONF_TV_PORT: 1926,
+            CONF_TV_VERIFY_SSL: False,
+            CONF_TV_POLL_FPS: 10,
+            CONF_BRIGHTNESS_MULTIPLIER: 1.0,
+            CONF_HUE_HOST: "synthetic-bridge",
+            CONF_HUE_BRIDGE_NAME: "Living room Bridge",
+            CONF_HUE_APP_KEY: "synthetic-app-key",
+            CONF_HUE_CLIENT_KEY: "synthetic-client-key",
+            CONF_HUE_AREA_ID: "area-one",
+            CONF_HUE_AREA_NAME: "Area One",
+            CONF_HUE_AREA_CHANNELS: [
+                {
+                    "channel_id": 0,
+                    "name": "Play Left",
+                    "position": [-0.8, 0.4, 0.0],
+                    "tv_mapping": "left_top",
+                }
+            ],
+            CONF_TV_CHANNEL_MAPPINGS: {"1": "left_top"},
+            CONF_LIGHTS: [],
+        },
+    )
+
+
+def _effective_entry_data(entry: MockConfigEntry, result: dict) -> dict:
+    """Combine immutable entry data with options returned by an options flow."""
+    return {**dict(entry.data), **dict(result["data"])}
+
 
 pytestmark = pytest.mark.usefixtures("enable_custom_integrations", "mock_async_zeroconf")
 
@@ -70,15 +132,22 @@ async def test_physical_hue_pairing_validates_areas_with_generated_app_key(monke
         async def close(self) -> None:
             pass
 
-    monkeypatch.setitem(sys.modules, "hue_entertainment", SimpleNamespace(HueEntertainmentAPI=FakeHueEntertainmentAPI))
+    monkeypatch.setitem(
+        sys.modules,
+        "hue_entertainment",
+        SimpleNamespace(HueEntertainmentAPI=FakeHueEntertainmentAPI),
+    )
     credentials, areas = await async_pair_hue_entertainment("test-bridge")
     assert credentials["username"] == "generated-test-key"
     assert areas == ["area"]
     assert created_with == [None, "generated-test-key"]
 
 
-async def test_physical_hue_pairing_keeps_credential_validation_failure_distinct(monkeypatch) -> None:
+async def test_physical_hue_pairing_keeps_credential_validation_failure_distinct(
+    monkeypatch,
+) -> None:
     """A post-registration 403 must never be presented as a button failure."""
+
     class FakeHueEntertainmentAPI:
         def __init__(self, _host: str, app_key: str | None = None) -> None:
             self.app_key = app_key
@@ -92,7 +161,11 @@ async def test_physical_hue_pairing_keeps_credential_validation_failure_distinct
         async def close(self) -> None:
             pass
 
-    monkeypatch.setitem(sys.modules, "hue_entertainment", SimpleNamespace(HueEntertainmentAPI=FakeHueEntertainmentAPI))
+    monkeypatch.setitem(
+        sys.modules,
+        "hue_entertainment",
+        SimpleNamespace(HueEntertainmentAPI=FakeHueEntertainmentAPI),
+    )
     with pytest.raises(HueSetupError, match="invalid_generated_credentials"):
         await async_pair_hue_entertainment("test-bridge")
 
@@ -140,10 +213,9 @@ async def test_setup_creates_device_and_sensor_and_unloads_cleanly(hass: HomeAss
     entry = await _setup(hass, _entry())
     data = entry.runtime_data
 
-    device = dr.async_get(hass).async_get_device_by_identifier(
-        (DOMAIN, BRIDGE_ID), entry.entry_id
-    )
+    device = dr.async_get(hass).async_get_device(identifiers={(DOMAIN, BRIDGE_ID)})
     assert device is not None and device.model == const.BRIDGE_MODEL_ID
+    assert entry.entry_id in device.config_entries
 
     entity_id = er.async_get(hass).async_get_entity_id(
         "binary_sensor", DOMAIN, f"{entry.entry_id}_entertainment_active"
@@ -156,6 +228,46 @@ async def test_setup_creates_device_and_sensor_and_unloads_cleanly(hass: HomeAss
     await hass.async_block_till_done()
     assert entry.state is ConfigEntryState.NOT_LOADED
     assert not data.dtls_server._thread.is_alive()
+
+
+async def test_pre_feature_entry_loads_with_legacy_defaults(hass: HomeAssistant) -> None:
+    """An original upstream entry loads without modern fields or migration."""
+    from custom_components.hue_entertainment.backends import HomeAssistantLightBackend
+
+    entry = _entry()
+    original_data = deepcopy(dict(entry.data))
+    original_entry_id = entry.entry_id
+
+    with (
+        patch(
+            "custom_components.hue_entertainment.PhilipsJointSpaceSource",
+            side_effect=AssertionError("JointSpace must not initialize"),
+        ),
+        patch(
+            "custom_components.hue_entertainment.HueEntertainmentBackend",
+            side_effect=AssertionError("physical Hue must not initialize"),
+        ),
+        patch(
+            "custom_components.hue_entertainment.config_flow.async_pair_hue_entertainment",
+            side_effect=AssertionError("physical Hue authorization must not run"),
+        ),
+    ):
+        await _setup(hass, entry)
+
+    resolved_input = entry.options.get(
+        CONF_INPUT_MODE, entry.data.get(CONF_INPUT_MODE, DEFAULT_INPUT_MODE)
+    )
+    resolved_backend = entry.options.get(
+        CONF_OUTPUT_BACKEND, entry.data.get(CONF_OUTPUT_BACKEND, DEFAULT_OUTPUT_BACKEND)
+    )
+    assert resolved_input == INPUT_LEGACY_HUESTREAM
+    assert resolved_backend == BACKEND_HOME_ASSISTANT
+    assert entry.runtime_data.jointspace_source is None
+    assert isinstance(entry.runtime_data.backend, HomeAssistantLightBackend)
+    assert entry.entry_id == original_entry_id
+    assert dict(entry.data) == original_data
+    assert not entry.options
+    assert await hass.config_entries.async_unload(entry.entry_id)
 
 
 async def test_bind_failure_raises_not_ready(hass: HomeAssistant) -> None:
@@ -234,6 +346,59 @@ async def test_diagnostics_redact_credentials(hass: HomeAssistant) -> None:
     assert await hass.config_entries.async_unload(entry.entry_id)
 
 
+async def test_diagnostics_recursively_redact_entry_options(hass: HomeAssistant) -> None:
+    """Sensitive options are redacted without mutating the config entry."""
+    from custom_components.hue_entertainment.diagnostics import (  # noqa: PLC0415
+        async_get_config_entry_diagnostics,
+    )
+
+    options = {
+        CONF_TV_PASSWORD: "synthetic-tv-password",
+        CONF_HUE_APP_KEY: "synthetic-application-key",
+        CONF_HUE_CLIENT_KEY: "synthetic-clientkey",
+        "nested": {"items": [{"authorization": "synthetic-authorization"}]},
+        "harmless": {"label": "visible"},
+    }
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        unique_id=DOMAIN,
+        data=dict(_entry().data),
+        options=deepcopy(options),
+        title="Hue Entertainment",
+    )
+    await _setup(hass, entry)
+    original_options = deepcopy(dict(entry.options))
+
+    diag = await async_get_config_entry_diagnostics(hass, entry)
+    redacted = diag["entry"]["options"]
+    assert redacted[CONF_TV_PASSWORD] == "**REDACTED**"
+    assert redacted[CONF_HUE_APP_KEY] == "**REDACTED**"
+    assert redacted[CONF_HUE_CLIENT_KEY] == "**REDACTED**"
+    assert redacted["nested"]["items"][0]["authorization"] == "**REDACTED**"
+    assert redacted["harmless"] == {"label": "visible"}
+    assert dict(entry.options) == original_options
+    assert await hass.config_entries.async_unload(entry.entry_id)
+
+
+def test_recursive_diagnostics_redaction_does_not_mutate_input() -> None:
+    """Options and nested diagnostic payloads never leak credentials."""
+    from custom_components.hue_entertainment.diagnostics import redact_diagnostics
+
+    original = {
+        "safe": "visible",
+        "nested": [{"hue_client_key": "synthetic-secret"}, {"password": "synthetic-password"}],
+        "tv_username": "synthetic-user",
+    }
+    redacted = redact_diagnostics(original)
+    assert redacted == {
+        "safe": "visible",
+        "nested": [{"hue_client_key": "**REDACTED**"}, {"password": "**REDACTED**"}],
+        "tv_username": "**REDACTED**",
+    }
+    assert original["safe"] == "visible"
+    assert original["nested"][0]["hue_client_key"] == "synthetic-secret"
+
+
 # ---------------------------------------------------------------------------
 # Config flow
 # ---------------------------------------------------------------------------
@@ -298,13 +463,21 @@ async def test_config_flow_aborts_when_port_in_use(hass: HomeAssistant) -> None:
 async def test_jointspace_validation_retains_latest_form_values(hass: HomeAssistant) -> None:
     """A retry must not make the user paste TV credentials again."""
     result = await hass.config_entries.flow.async_init(DOMAIN, context={"source": "user"})
-    result = await hass.config_entries.flow.async_configure(result["flow_id"], {
-        CONF_LIGHTS: LIGHTS, CONF_INPUT_MODE: INPUT_PHILIPS_JOINTSPACE,
-    })
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"],
+        {
+            CONF_LIGHTS: LIGHTS,
+            CONF_INPUT_MODE: INPUT_PHILIPS_JOINTSPACE,
+        },
+    )
     assert result["step_id"] == "jointspace"
     values = {
-        CONF_TV_HOST: "test-tv", CONF_TV_USERNAME: "test-user", CONF_TV_PASSWORD: "test-pass",
-        CONF_TV_API_VERSION: 6, CONF_TV_PORT: 1926, CONF_TV_VERIFY_SSL: False,
+        CONF_TV_HOST: "test-tv",
+        CONF_TV_USERNAME: "test-user",
+        CONF_TV_PASSWORD: "test-pass",
+        CONF_TV_API_VERSION: 6,
+        CONF_TV_PORT: 1926,
+        CONF_TV_VERIFY_SSL: False,
     }
     with patch(
         "custom_components.hue_entertainment.config_flow.async_validate_jointspace",
@@ -315,6 +488,488 @@ async def test_jointspace_validation_retains_latest_form_values(hass: HomeAssist
     assert result["errors"] == {"base": "timeout"}
     defaults = result["data_schema"]({})
     assert {key: defaults[key] for key in values} == values
+
+
+async def test_modern_initial_flow_persists_authenticated_hue_setup(hass: HomeAssistant) -> None:
+    """Modern setup persists only the validated TV and synthetic Hue state."""
+    area = SimpleNamespace(id="synthetic-area", name="Living room", channels=[])
+    tv = {
+        CONF_TV_HOST: "synthetic-tv",
+        CONF_TV_USERNAME: "synthetic-user",
+        CONF_TV_PASSWORD: "synthetic-password",
+        CONF_TV_API_VERSION: 6,
+        CONF_TV_PORT: 1926,
+        CONF_TV_VERIFY_SSL: False,
+    }
+    with (
+        patch(
+            "custom_components.hue_entertainment.config_flow.async_validate_jointspace",
+            AsyncMock(return_value={"left": 1}),
+        ),
+        patch(
+            "custom_components.hue_entertainment.config_flow.async_known_hue_bridges",
+            return_value=[],
+        ),
+        patch(
+            "custom_components.hue_entertainment.config_flow.async_pair_hue_entertainment",
+            AsyncMock(
+                return_value=(
+                    {"username": "synthetic-app-key", "clientkey": "synthetic-client-key"},
+                    [area],
+                )
+            ),
+        ),
+    ):
+        result = await hass.config_entries.flow.async_init(DOMAIN, context={"source": "user"})
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"],
+            {
+                CONF_INPUT_MODE: INPUT_PHILIPS_JOINTSPACE,
+                CONF_OUTPUT_BACKEND: BACKEND_HUE,
+                CONF_LIGHTS: [],
+            },
+        )
+        result = await hass.config_entries.flow.async_configure(result["flow_id"], tv)
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"], {CONF_HUE_HOST: "synthetic-bridge"}
+        )
+        result = await hass.config_entries.flow.async_configure(result["flow_id"], {})
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"], {CONF_HUE_AREA_ID: "synthetic-area"}
+        )
+    data = result["data"]
+    assert (
+        data[CONF_INPUT_MODE] == INPUT_PHILIPS_JOINTSPACE
+        and data[CONF_OUTPUT_BACKEND] == BACKEND_HUE
+        and data[CONF_OUTPUT_CONFIGURED]
+    )
+    assert data[CONF_TV_HOST] == tv[CONF_TV_HOST] and data[CONF_HUE_HOST] == "synthetic-bridge"
+    assert (
+        data[CONF_HUE_APP_KEY] == "synthetic-app-key"
+        and data[CONF_HUE_CLIENT_KEY] == "synthetic-client-key"
+    )
+    assert data[CONF_HUE_AREA_ID] == "synthetic-area" and data[CONF_HUE_AREA_NAME] == "Living room"
+
+
+async def test_deferred_hue_setup_preserves_jointspace_configuration(hass: HomeAssistant) -> None:
+    """Deferred output setup completes later without revisiting TV credentials."""
+    tv = {
+        CONF_TV_HOST: "synthetic-tv",
+        CONF_TV_USERNAME: "synthetic-user",
+        CONF_TV_PASSWORD: "synthetic-password",
+        CONF_TV_API_VERSION: 6,
+        CONF_TV_PORT: 1926,
+        CONF_TV_VERIFY_SSL: False,
+    }
+    with (
+        patch(
+            "custom_components.hue_entertainment.config_flow.async_validate_jointspace",
+            AsyncMock(return_value={"left": 1}),
+        ),
+        patch(
+            "custom_components.hue_entertainment.config_flow.async_known_hue_bridges",
+            return_value=[],
+        ),
+    ):
+        result = await hass.config_entries.flow.async_init(DOMAIN, context={"source": "user"})
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"],
+            {
+                CONF_INPUT_MODE: INPUT_PHILIPS_JOINTSPACE,
+                CONF_OUTPUT_BACKEND: BACKEND_HUE,
+                CONF_LIGHTS: [],
+            },
+        )
+        result = await hass.config_entries.flow.async_configure(result["flow_id"], tv)
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"], {CONF_HUE_HOST: "synthetic-bridge"}
+        )
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"], {"skip_hue_pairing": True}
+        )
+    entry = MockConfigEntry(domain=DOMAIN, data=result["data"], title="Synthetic")
+    entry.add_to_hass(hass)
+    area = SimpleNamespace(id="synthetic-area", name="Living room", channels=[])
+    with (
+        patch(
+            "custom_components.hue_entertainment.config_flow.async_known_hue_bridges",
+            return_value=[],
+        ),
+        patch(
+            "custom_components.hue_entertainment.config_flow.async_pair_hue_entertainment",
+            AsyncMock(
+                return_value=(
+                    {"username": "synthetic-app-key", "clientkey": "synthetic-client-key"},
+                    [area],
+                )
+            ),
+        ),
+    ):
+        options = await hass.config_entries.options.async_init(entry.entry_id)
+        options = await hass.config_entries.options.async_configure(
+            options["flow_id"], {"management_action": "reauthorize"}
+        )
+        options = await hass.config_entries.options.async_configure(
+            options["flow_id"], {CONF_HUE_HOST: "synthetic-bridge"}
+        )
+        options = await hass.config_entries.options.async_configure(options["flow_id"], {})
+        options = await hass.config_entries.options.async_configure(
+            options["flow_id"], {CONF_HUE_AREA_ID: "synthetic-area"}
+        )
+    assert (
+        options["data"][CONF_OUTPUT_CONFIGURED]
+        and entry.data[CONF_TV_PASSWORD] == tv[CONF_TV_PASSWORD]
+    )
+    assert (
+        options["data"][CONF_HUE_APP_KEY] == "synthetic-app-key"
+        and options["data"][CONF_HUE_AREA_NAME] == "Living room"
+    )
+
+
+async def test_management_menu_never_starts_hue_pairing(hass: HomeAssistant) -> None:
+    """Opening Configure only exposes stored management metadata."""
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        title="Synthetic",
+        data={
+            CONF_BRIDGE_ID: BRIDGE_ID,
+            CONF_INPUT_MODE: INPUT_PHILIPS_JOINTSPACE,
+            CONF_OUTPUT_BACKEND: BACKEND_HUE,
+            CONF_OUTPUT_CONFIGURED: True,
+            CONF_TV_HOST: "synthetic-tv",
+            CONF_TV_USERNAME: "synthetic-user",
+            CONF_TV_PASSWORD: "synthetic-password",
+            CONF_HUE_HOST: "synthetic-bridge",
+            CONF_HUE_BRIDGE_NAME: "Living room Bridge",
+            CONF_HUE_APP_KEY: "synthetic-app-key",
+            CONF_HUE_CLIENT_KEY: "synthetic-client-key",
+            CONF_HUE_AREA_ID: "synthetic-area",
+            CONF_HUE_AREA_NAME: "Living room",
+            CONF_LIGHTS: [],
+        },
+    )
+    entry.add_to_hass(hass)
+    with patch(
+        "custom_components.hue_entertainment.config_flow.async_pair_hue_entertainment",
+        side_effect=AssertionError("pair must not run"),
+    ):
+        result = await hass.config_entries.options.async_init(entry.entry_id)
+    assert result["step_id"] == "init"
+    text = str(result["description_placeholders"])
+    assert "Living room Bridge" in text and "Living room" in text
+    assert (
+        entry.data[CONF_HUE_APP_KEY] == "synthetic-app-key"
+        and entry.data[CONF_TV_PASSWORD] == "synthetic-password"
+    )
+
+
+async def test_hue_management_prefers_stored_friendly_metadata(hass: HomeAssistant) -> None:
+    """The Hue management page uses display metadata without pairing or I/O."""
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={
+            CONF_BRIDGE_ID: BRIDGE_ID,
+            CONF_INPUT_MODE: INPUT_PHILIPS_JOINTSPACE,
+            CONF_OUTPUT_BACKEND: BACKEND_HUE,
+            CONF_HUE_HOST: "synthetic-host",
+            CONF_HUE_BRIDGE_NAME: "Living room Bridge",
+            CONF_HUE_APP_KEY: "synthetic-app-key",
+            CONF_HUE_CLIENT_KEY: "synthetic-client-key",
+            CONF_HUE_AREA_ID: "synthetic-area-id",
+            CONF_HUE_AREA_NAME: "Movie night",
+        },
+        title="Synthetic",
+    )
+    entry.add_to_hass(hass)
+    with patch(
+        "custom_components.hue_entertainment.config_flow.async_pair_hue_entertainment",
+        side_effect=AssertionError("pair must not run"),
+    ):
+        result = await hass.config_entries.options.async_init(entry.entry_id)
+        result = await hass.config_entries.options.async_configure(
+            result["flow_id"], {"management_action": "hue"}
+        )
+    values = str(result["description_placeholders"])
+    assert "Living room Bridge" in values and "Movie night" in values
+    assert "synthetic-host" not in values and "synthetic-area-id" not in values
+
+
+async def _run_hue_test_connection(
+    hass: HomeAssistant,
+    *,
+    areas: list | None = None,
+    error: Exception | None = None,
+) -> tuple[dict, dict[str, object]]:
+    """Run Test connection through the management flow and verify it is read-only."""
+    entry = _configured_jointspace_hue_entry()
+    entry.add_to_hass(hass)
+    before_data = deepcopy(dict(entry.data))
+    before_options = deepcopy(dict(entry.options))
+    calls: dict[str, object] = {"clients": [], "discoveries": 0, "pairs": 0}
+
+    class FakeHueEntertainmentAPI:
+        def __init__(self, host: str, app_key: str) -> None:
+            clients = calls["clients"]
+            assert isinstance(clients, list)
+            clients.append((host, app_key))
+
+        async def get_entertainment_areas(self):
+            calls["discoveries"] = int(calls["discoveries"]) + 1
+            if error is not None:
+                raise error
+            return areas
+
+        async def pair(self, _device_type: str):
+            calls["pairs"] = int(calls["pairs"]) + 1
+            raise AssertionError("pair must not run")
+
+        async def close(self) -> None:
+            return None
+
+    with (
+        patch(
+            "custom_components.hue_entertainment.config_flow._hue_api_type",
+            return_value=FakeHueEntertainmentAPI,
+        ),
+        patch(
+            "custom_components.hue_entertainment.config_flow.async_pair_hue_entertainment",
+            side_effect=AssertionError("pairing helper must not run"),
+        ),
+    ):
+        result = await hass.config_entries.options.async_init(entry.entry_id)
+        result = await hass.config_entries.options.async_configure(
+            result["flow_id"], {"management_action": "hue"}
+        )
+        result = await hass.config_entries.options.async_configure(
+            result["flow_id"], {"hue_action": "test"}
+        )
+
+    assert calls["clients"] == [(entry.data[CONF_HUE_HOST], entry.data[CONF_HUE_APP_KEY])]
+    assert calls["discoveries"] == 1
+    assert calls["pairs"] == 0
+    assert dict(entry.data) == before_data
+    assert dict(entry.options) == before_options
+    return result, calls
+
+
+async def test_hue_test_connection_succeeds_read_only(hass: HomeAssistant) -> None:
+    """Test connection authenticates and discovers Areas without changing state."""
+    result, _calls = await _run_hue_test_connection(
+        hass,
+        areas=[SimpleNamespace(id="synthetic-area", name="Synthetic Area", channels=[])],
+    )
+
+    assert result["step_id"] == "hue_manage"
+    assert "successful" in result["description_placeholders"]["result"].lower()
+    assert not result["errors"]
+
+
+async def test_hue_test_connection_classifies_invalid_credentials(
+    hass: HomeAssistant,
+) -> None:
+    """An authenticated CLIP v2 rejection is reported as invalid credentials."""
+    error = aiohttp.ClientResponseError(
+        request_info=SimpleNamespace(real_url="https://synthetic-bridge/clip/v2/resource"),
+        history=(),
+        status=403,
+    )
+    result, _calls = await _run_hue_test_connection(hass, error=error)
+
+    assert result["errors"] == {"base": "invalid_credentials"}
+
+
+async def test_hue_test_connection_classifies_unreachable_bridge(
+    hass: HomeAssistant,
+) -> None:
+    """A connection failure is reported without entering authorization."""
+    result, _calls = await _run_hue_test_connection(
+        hass, error=aiohttp.ClientConnectionError("synthetic connection failure")
+    )
+
+    assert result["errors"] == {"base": "bridge_unreachable"}
+
+
+async def test_hue_test_connection_classifies_timeout(hass: HomeAssistant) -> None:
+    """An API timeout remains distinct from an unreachable Bridge."""
+    result, _calls = await _run_hue_test_connection(hass, error=asyncio.TimeoutError())
+
+    assert result["errors"] == {"base": "timeout"}
+
+
+async def test_hue_test_connection_requires_entertainment_area(
+    hass: HomeAssistant,
+) -> None:
+    """An authenticated response without Areas has its own recoverable error."""
+    result, _calls = await _run_hue_test_connection(hass, areas=[])
+
+    assert result["errors"] == {"base": "no_entertainment_areas"}
+    assert result["errors"]["base"] != "invalid_credentials"
+
+
+async def test_tv_only_edit_preserves_physical_hue_configuration(
+    hass: HomeAssistant,
+) -> None:
+    """Changing JointSpace settings leaves all Hue output state untouched."""
+    entry = _configured_jointspace_hue_entry()
+    entry.add_to_hass(hass)
+
+    with (
+        patch(
+            "custom_components.hue_entertainment.config_flow.async_validate_jointspace",
+            AsyncMock(return_value=SimpleNamespace()),
+        ),
+        patch(
+            "custom_components.hue_entertainment.config_flow.async_pair_hue_entertainment",
+            side_effect=AssertionError("pair must not run"),
+        ),
+    ):
+        result = await hass.config_entries.options.async_init(entry.entry_id)
+        result = await hass.config_entries.options.async_configure(
+            result["flow_id"], {"management_action": "tv"}
+        )
+        result = await hass.config_entries.options.async_configure(
+            result["flow_id"],
+            {
+                CONF_TV_HOST: entry.data[CONF_TV_HOST],
+                CONF_TV_USERNAME: entry.data[CONF_TV_USERNAME],
+                CONF_TV_PASSWORD: "",
+                CONF_TV_API_VERSION: entry.data[CONF_TV_API_VERSION],
+                CONF_TV_PORT: 1927,
+                CONF_TV_VERIFY_SSL: entry.data[CONF_TV_VERIFY_SSL],
+            },
+        )
+
+    effective = _effective_entry_data(entry, result)
+    assert effective[CONF_TV_PORT] == 1927
+    assert effective[CONF_HUE_HOST] == entry.data[CONF_HUE_HOST]
+    assert effective[CONF_HUE_BRIDGE_NAME] == entry.data[CONF_HUE_BRIDGE_NAME]
+    assert effective[CONF_HUE_APP_KEY] == entry.data[CONF_HUE_APP_KEY]
+    assert effective[CONF_HUE_CLIENT_KEY] == entry.data[CONF_HUE_CLIENT_KEY]
+    assert effective[CONF_HUE_AREA_ID] == entry.data[CONF_HUE_AREA_ID]
+    assert effective[CONF_HUE_AREA_NAME] == entry.data[CONF_HUE_AREA_NAME]
+    assert effective[CONF_TV_CHANNEL_MAPPINGS] == entry.data[CONF_TV_CHANNEL_MAPPINGS]
+    assert effective[CONF_OUTPUT_CONFIGURED] is True
+
+
+async def test_area_only_edit_preserves_other_configuration(hass: HomeAssistant) -> None:
+    """Changing an Entertainment Area retains TV, Bridge, and credential state."""
+    entry = _configured_jointspace_hue_entry()
+    entry.add_to_hass(hass)
+    areas = [
+        SimpleNamespace(
+            id="area-one",
+            name="Area One",
+            channels=[SimpleNamespace(channel_id=0, name="Play Left", position=(-0.8, 0.4, 0.0))],
+        ),
+        SimpleNamespace(
+            id="area-two",
+            name="Area Two",
+            channels=[SimpleNamespace(channel_id=0, name="Play Left", position=(-0.7, 0.3, 0.0))],
+        ),
+    ]
+
+    class FakeHueEntertainmentAPI:
+        def __init__(self, host: str, app_key: str) -> None:
+            assert host == entry.data[CONF_HUE_HOST]
+            assert app_key == entry.data[CONF_HUE_APP_KEY]
+
+        async def get_entertainment_areas(self):
+            return areas
+
+        async def close(self) -> None:
+            return None
+
+    module = SimpleNamespace(HueEntertainmentAPI=FakeHueEntertainmentAPI)
+    with (
+        patch.dict(sys.modules, {"hue_entertainment": module}),
+        patch(
+            "custom_components.hue_entertainment.config_flow.async_pair_hue_entertainment",
+            side_effect=AssertionError("pair must not run"),
+        ),
+    ):
+        result = await hass.config_entries.options.async_init(entry.entry_id)
+        result = await hass.config_entries.options.async_configure(
+            result["flow_id"], {"management_action": "area"}
+        )
+        result = await hass.config_entries.options.async_configure(
+            result["flow_id"],
+            {CONF_HUE_HOST: entry.data[CONF_HUE_HOST], CONF_HUE_AREA_ID: "area-two"},
+        )
+        result = await hass.config_entries.options.async_configure(
+            result["flow_id"], {"tv_mapping": "left_top"}
+        )
+
+    effective = _effective_entry_data(entry, result)
+    assert effective[CONF_HUE_AREA_ID] == "area-two"
+    assert effective[CONF_HUE_AREA_NAME] == "Area Two"
+    assert effective[CONF_TV_HOST] == entry.data[CONF_TV_HOST]
+    assert effective[CONF_TV_USERNAME] == entry.data[CONF_TV_USERNAME]
+    assert effective[CONF_TV_PASSWORD] == entry.data[CONF_TV_PASSWORD]
+    assert effective[CONF_HUE_HOST] == entry.data[CONF_HUE_HOST]
+    assert effective[CONF_HUE_BRIDGE_NAME] == entry.data[CONF_HUE_BRIDGE_NAME]
+    assert effective[CONF_HUE_APP_KEY] == entry.data[CONF_HUE_APP_KEY]
+    assert effective[CONF_HUE_CLIENT_KEY] == entry.data[CONF_HUE_CLIENT_KEY]
+
+
+async def test_mapping_only_edit_preserves_other_configuration(hass: HomeAssistant) -> None:
+    """Changing Ambilight mapping does not reauthorize or replace source/output data."""
+    entry = _configured_jointspace_hue_entry()
+    entry.add_to_hass(hass)
+
+    with patch(
+        "custom_components.hue_entertainment.config_flow.async_pair_hue_entertainment",
+        side_effect=AssertionError("pair must not run"),
+    ):
+        result = await hass.config_entries.options.async_init(entry.entry_id)
+        result = await hass.config_entries.options.async_configure(
+            result["flow_id"], {"management_action": "mapping"}
+        )
+        result = await hass.config_entries.options.async_configure(
+            result["flow_id"], {"tv_mapping": "right_bottom"}
+        )
+
+    effective = _effective_entry_data(entry, result)
+    assert effective[CONF_TV_CHANNEL_MAPPINGS] == {"1": "right_bottom"}
+    assert effective[CONF_TV_HOST] == entry.data[CONF_TV_HOST]
+    assert effective[CONF_HUE_HOST] == entry.data[CONF_HUE_HOST]
+    assert effective[CONF_HUE_BRIDGE_NAME] == entry.data[CONF_HUE_BRIDGE_NAME]
+    assert effective[CONF_HUE_APP_KEY] == entry.data[CONF_HUE_APP_KEY]
+    assert effective[CONF_HUE_CLIENT_KEY] == entry.data[CONF_HUE_CLIENT_KEY]
+    assert effective[CONF_HUE_AREA_ID] == entry.data[CONF_HUE_AREA_ID]
+    assert effective[CONF_HUE_AREA_NAME] == entry.data[CONF_HUE_AREA_NAME]
+
+
+async def test_performance_only_edit_preserves_other_configuration(
+    hass: HomeAssistant,
+) -> None:
+    """Changing performance options leaves TV, Hue, Area, and mapping data intact."""
+    entry = _configured_jointspace_hue_entry()
+    entry.add_to_hass(hass)
+
+    with patch(
+        "custom_components.hue_entertainment.config_flow.async_pair_hue_entertainment",
+        side_effect=AssertionError("pair must not run"),
+    ):
+        result = await hass.config_entries.options.async_init(entry.entry_id)
+        result = await hass.config_entries.options.async_configure(
+            result["flow_id"], {"management_action": "performance"}
+        )
+        result = await hass.config_entries.options.async_configure(
+            result["flow_id"], {CONF_TV_POLL_FPS: 12}
+        )
+
+    effective = _effective_entry_data(entry, result)
+    assert effective[CONF_TV_POLL_FPS] == 12
+    assert effective[CONF_TV_HOST] == entry.data[CONF_TV_HOST]
+    assert effective[CONF_TV_USERNAME] == entry.data[CONF_TV_USERNAME]
+    assert effective[CONF_TV_PASSWORD] == entry.data[CONF_TV_PASSWORD]
+    assert effective[CONF_HUE_HOST] == entry.data[CONF_HUE_HOST]
+    assert effective[CONF_HUE_BRIDGE_NAME] == entry.data[CONF_HUE_BRIDGE_NAME]
+    assert effective[CONF_HUE_APP_KEY] == entry.data[CONF_HUE_APP_KEY]
+    assert effective[CONF_HUE_CLIENT_KEY] == entry.data[CONF_HUE_CLIENT_KEY]
+    assert effective[CONF_HUE_AREA_ID] == entry.data[CONF_HUE_AREA_ID]
+    assert effective[CONF_HUE_AREA_NAME] == entry.data[CONF_HUE_AREA_NAME]
+    assert effective[CONF_TV_CHANNEL_MAPPINGS] == entry.data[CONF_TV_CHANNEL_MAPPINGS]
 
 
 async def test_options_flow_validates_bind_ip(hass: HomeAssistant) -> None:

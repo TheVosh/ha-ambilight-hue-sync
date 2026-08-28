@@ -1,8 +1,7 @@
-"""Output backends for parsed HueStream frames.
+"""Output backends for normalized Ambilight channel frames.
 
-The virtual bridge always receives HueStream frames from the TV.  Backends only
-decide where those parsed channel colours go; this keeps the TV-facing protocol
-entirely independent from the physical output transport.
+Legacy HueStream and JointSpace inputs share these destinations, keeping input
+transport independent from the physical output transport.
 """
 
 from __future__ import annotations
@@ -12,12 +11,18 @@ import colorsys
 import logging
 import time
 from abc import ABC, abstractmethod
+from importlib import import_module
 from typing import Any
 
 from .const import COLOR_SPACE_XY, DEFAULT_STREAM_FPS
 from .entertainment import ChannelColor, EntertainmentEngine
 
 _LOGGER = logging.getLogger(__name__)
+
+
+def _hue_symbol(name: str) -> Any:
+    """Resolve optional PyPI symbols despite the integration package name collision."""
+    return getattr(import_module("hue_entertainment"), name)
 
 
 class EntertainmentOutputBackend(ABC):
@@ -58,6 +63,7 @@ class HomeAssistantLightBackend(EntertainmentOutputBackend):
 
 class DisabledOutputBackend(EntertainmentOutputBackend):
     """Safe placeholder while a staged physical Hue setup is incomplete."""
+
     async def async_start(self) -> None:
         return
 
@@ -123,7 +129,7 @@ class HueEntertainmentBackend(EntertainmentOutputBackend):
                 return
             # Imported here so HA can install the manifest requirement before
             # importing the integration and unit tests can exercise old code alone.
-            from hue_entertainment import EntertainmentSession
+            EntertainmentSession = _hue_symbol("EntertainmentSession")
 
             if self._session is None:
                 self._session = EntertainmentSession(
@@ -144,7 +150,7 @@ class HueEntertainmentBackend(EntertainmentOutputBackend):
         if now - self._last_send < 1 / self._fps_cap:
             return
         self._last_send = now
-        from hue_entertainment import LightColorCommand
+        LightColorCommand = _hue_symbol("LightColorCommand")
 
         commands = []
         for channel in channels:
@@ -153,9 +159,7 @@ class HueEntertainmentBackend(EntertainmentOutputBackend):
                 continue
             red, green, blue = self._adjust(*_as_rgb(channel, color_space))
             commands.append(
-                LightColorCommand(
-                    channel_id=physical_channel, red=red, green=green, blue=blue
-                )
+                LightColorCommand(channel_id=physical_channel, red=red, green=green, blue=blue)
             )
         if not commands:
             return
@@ -177,12 +181,16 @@ class HueEntertainmentBackend(EntertainmentOutputBackend):
 
     def _adjust(self, red: int, green: int, blue: int) -> tuple[int, int, int]:
         hue, saturation, value = colorsys.rgb_to_hsv(red / 65535, green / 65535, blue / 65535)
-        red, green, blue = colorsys.hsv_to_rgb(
+        adjusted_red, adjusted_green, adjusted_blue = colorsys.hsv_to_rgb(
             hue,
             min(1.0, saturation * self._saturation_multiplier),
             min(1.0, value * self._brightness_multiplier),
         )
-        return (round(red * 65535), round(green * 65535), round(blue * 65535))
+        return (
+            round(adjusted_red * 65535),
+            round(adjusted_green * 65535),
+            round(adjusted_blue * 65535),
+        )
 
 
 def _as_rgb(channel: ChannelColor, color_space: int) -> tuple[int, int, int]:
@@ -196,9 +204,11 @@ def _as_rgb(channel: ChannelColor, color_space: int) -> tuple[int, int, int]:
         # CIE xyY -> linear RGB (D65), then gamma encode.
         y_lum = bri
         x_val, z_val = x * y_lum / y, (1 - x - y) * y_lum / y
-        linear = (3.2406 * x_val - 1.5372 * y_lum - 0.4986 * z_val,
-                  -0.9689 * x_val + 1.8758 * y_lum + 0.0415 * z_val,
-                  0.0557 * x_val - 0.2040 * y_lum + 1.0570 * z_val)
+        linear = (
+            3.2406 * x_val - 1.5372 * y_lum - 0.4986 * z_val,
+            -0.9689 * x_val + 1.8758 * y_lum + 0.0415 * z_val,
+            0.0557 * x_val - 0.2040 * y_lum + 1.0570 * z_val,
+        )
         rgb = [max(0.0, value) for value in linear]
         peak = max(rgb, default=0.0)
         if peak > 1:
