@@ -87,8 +87,9 @@
     "step": {
       "init": {
         "title": "Pont de divertissement Hue",
-        "description": "Modifiez les lumières de l'espace de divertissement ou associez votre téléviseur.",
+        "description": "TV : {tv_host}\nPont Hue : {hue_status} ({hue_host})\nZone de divertissement : {area}\nCanaux : {channels}\n\nChoisissez ce que vous souhaitez gérer. Vos connexions enregistrées ne changent pas avant l’enregistrement d’une modification.",
         "data": {
+          "management_action": "Que souhaitez-vous gérer ?",
           "output_backend": "Output backend",
           "lights": "Lumières",
           "pair_now": "Associer le téléviseur maintenant",
@@ -101,6 +102,9 @@
           "http_mode": "Où l'API REST Hue est servie. Automatique : utilise le serveur web de Home Assistant lorsqu'il écoute sur le port 80 sans HTTPS (Paramètres → Système → Réseau, HA 2026.8+), sinon un serveur autonome sur le port 80. Ne changer que si le choix automatique est incorrect."
         }
       },
+      "jointspace_options": {"title": "Connexion TV et Ambilight", "description": "Mettez à jour la connexion du téléviseur Philips. Laissez le mot de passe vide pour le conserver.", "data": {"tv_host": "Adresse du téléviseur", "tv_username": "Nom d’utilisateur TV", "tv_password": "Mot de passe TV", "tv_api_version": "Version de l’API TV", "tv_port": "Port de l’API TV", "tv_verify_ssl": "Vérifier le certificat TV"}},
+      "hue_manage": {"title": "Pont Philips Hue", "description": "Pont Hue : {host}\nZone de divertissement : {area}\n\nLe test de connexion ne demande pas de nouvelle autorisation.", "data": {"hue_action": "Action du pont Hue"}},
+      "performance": {"title": "Performances et couleur", "description": "Réglez la réactivité et l’intensité des couleurs. Ces réglages ne modifient pas vos connexions TV ou Hue.", "data": {"tv_poll_fps": "Mises à jour Ambilight par seconde", "brightness_multiplier": "Multiplicateur de luminosité", "saturation_multiplier": "Multiplicateur de saturation", "tv_inactivity_timeout": "Arrêter après absence de données Ambilight (secondes)", "reverse_left": "Inverser le bord gauche", "reverse_right": "Inverser le bord droit", "reverse_top": "Inverser le bord supérieur", "reverse_bottom": "Inverser le bord inférieur"}},
       "hue_setup_bridge": {"title": "Configurer le pont Philips Hue", "description": "Choisissez un pont Hue Home Assistant existant ou saisissez un autre pont.", "data": {"ha_hue_bridge": "Pont Hue"}},
       "hue_setup_host": {"title": "Pont Philips Hue", "data": {"hue_host": "Pont Hue"}},
       "hue_setup_pair": {"title": "Autoriser Hue Entertainment", "description": "Appuyez sur le bouton physique du pont Hue, puis sélectionnez Soumettre."},

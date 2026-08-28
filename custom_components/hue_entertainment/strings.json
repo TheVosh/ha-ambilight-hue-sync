@@ -83,8 +83,9 @@
     "step": {
       "init": {
         "title": "Hue Entertainment Bridge",
-        "description": "Update the entertainment area lights or pair your TV.",
+        "description": "TV: {tv_host}\nHue Bridge: {hue_status} ({hue_host})\nEntertainment Area: {area}\nChannels: {channels}\n\nChoose what you want to manage. Your saved connections are never changed until you save an edit.",
         "data": {
+          "management_action": "What would you like to manage?",
           "output_backend": "Output backend",
           "lights": "Lights",
           "pair_now": "Pair TV now",
@@ -97,6 +98,9 @@
           "http_mode": "Where the Hue REST API is served. Automatic: uses Home Assistant's own web server when it listens on port 80 without HTTPS (Settings → System → Network, HA 2026.8+), otherwise a standalone server on port 80. Change only if the automatic choice is wrong."
         }
       },
+      "jointspace_options": {"title": "TV and Ambilight connection", "description": "Update your Philips TV connection. Leave the password blank to keep the current password.", "data": {"tv_host": "TV address", "tv_username": "TV username", "tv_password": "TV password", "tv_api_version": "TV API version", "tv_port": "TV API port", "tv_verify_ssl": "Verify the TV certificate"}},
+      "hue_manage": {"title": "Philips Hue Bridge", "description": "Hue Bridge: {host}\nEntertainment Area: {area}\n\nTesting the connection does not request new authorization.", "data": {"hue_action": "Hue Bridge action"}},
+      "performance": {"title": "Performance and colour", "description": "Tune responsiveness and colour intensity. These settings do not change your TV or Hue connection.", "data": {"tv_poll_fps": "Ambilight updates per second", "brightness_multiplier": "Brightness multiplier", "saturation_multiplier": "Colour saturation multiplier", "tv_inactivity_timeout": "Stop after no Ambilight data (seconds)", "reverse_left": "Reverse left edge", "reverse_right": "Reverse right edge", "reverse_top": "Reverse top edge", "reverse_bottom": "Reverse bottom edge"}},
       "hue_setup_bridge": {"title": "Set up Philips Hue Bridge", "description": "Choose an existing Home Assistant Hue Bridge or enter another bridge.", "data": {"ha_hue_bridge": "Hue Bridge"}},
       "hue_setup_host": {"title": "Philips Hue Bridge", "data": {"hue_host": "Hue Bridge"}},
       "hue_setup_pair": {"title": "Authorize Hue Entertainment", "description": "Press the physical link button on your Hue Bridge, then select Submit."},
