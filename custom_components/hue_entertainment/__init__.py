@@ -10,11 +10,13 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from urllib.parse import urlparse
 
+import voluptuous as vol
+
 from homeassistant.components.network import async_get_source_ip
 from homeassistant.components.zeroconf import async_get_async_instance
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import EVENT_HOMEASSISTANT_STARTED, EVENT_HOMEASSISTANT_STOP, Platform
-from homeassistant.core import CoreState, Event, HomeAssistant
+from homeassistant.core import CoreState, Event, HomeAssistant, ServiceCall
 from homeassistant.exceptions import ConfigEntryNotReady
 from homeassistant.helpers.dispatcher import async_dispatcher_send
 from homeassistant.helpers.network import get_url
@@ -35,6 +37,7 @@ from .const import (
     DOMAIN,
     FRAME_TIMEOUT,
     FRAME_WATCHDOG_INTERVAL,
+    MAX_YIELD_SECONDS,
     SIGNAL_ENTERTAINMENT_CHANGED,
 )
 from .discovery import HueBridgeDiscovery
@@ -44,7 +47,22 @@ from .ha_http import async_get_http_host, resolve_use_ha_http
 from .hue_api import HueAPIServer
 from .user_store import UserStore
 
-PLATFORMS = [Platform.BINARY_SENSOR]
+PLATFORMS = [Platform.BINARY_SENSOR, Platform.SENSOR]
+
+# Service names — see services.yaml for field schemas and README "Pause,
+# resume, release" for the full contract these implement.
+SERVICE_PAUSE = "pause"
+SERVICE_RESUME = "resume"
+SERVICE_RELEASE = "release"
+ATTR_SECONDS = "seconds"
+
+_SECONDS_SCHEMA = vol.Schema(
+    {
+        vol.Optional(ATTR_SECONDS, default=0): vol.All(
+            vol.Coerce(float), vol.Range(min=0, max=MAX_YIELD_SECONDS)
+        ),
+    }
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -113,7 +131,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: HueEntertainmentConfigEn
         for i, entity_id in enumerate(light_entities)
     ]
 
-    engine = EntertainmentEngine(hass, mappings)
+    engine = EntertainmentEngine(
+        hass, mappings, notify=lambda: async_dispatcher_send(hass, SIGNAL_ENTERTAINMENT_CHANGED)
+    )
 
     # HA-idiomatic persistent user store
     ha_store: Store[dict[str, dict]] = Store(hass, version=1, key=f"{DOMAIN}.users")
@@ -178,6 +198,20 @@ async def async_setup_entry(hass: HomeAssistant, entry: HueEntertainmentConfigEn
             watchdog_task.cancel()
         watchdog_task = None
 
+    async def _async_stop_entertainment_session() -> None:
+        """Tear down a session: clear the API-side flags and restore lights.
+
+        Shared by every path that can end a session — the API-driven stop
+        (`_on_entertainment_stop`), the watchdog timeout, and (indirectly, via
+        `engine.async_restore_lights` itself) a release's forced teardown —
+        so they can never diverge. `engine.async_restore_lights()` flips
+        `engine.is_active` and notifies listeners (e.g. the sensors)
+        immediately, before attempting the bounded, best-effort light
+        restore.
+        """
+        api_server.clear_entertainment()
+        await engine.async_restore_lights()
+
     async def _frame_watchdog() -> None:
         try:
             while engine.is_active:
@@ -189,9 +223,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: HueEntertainmentConfigEn
                     _LOGGER.warning(
                         "No entertainment frames for %.1f seconds, auto-stopping", elapsed
                     )
-                    api_server.clear_entertainment()
-                    await engine.async_restore_lights()
-                    async_dispatcher_send(hass, SIGNAL_ENTERTAINMENT_CHANGED)
+                    await _async_stop_entertainment_session()
                     break
         except asyncio.CancelledError:
             pass
@@ -200,7 +232,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: HueEntertainmentConfigEn
         nonlocal watchdog_task
         _LOGGER.info("Entertainment started by %s", username)
         await engine.async_snapshot_lights()
-        async_dispatcher_send(hass, SIGNAL_ENTERTAINMENT_CHANGED)
         if watchdog_task is None or watchdog_task.done():
             # Owned by the entry: cancelled automatically on unload
             watchdog_task = entry.async_create_background_task(
@@ -209,13 +240,43 @@ async def async_setup_entry(hass: HomeAssistant, entry: HueEntertainmentConfigEn
 
     async def _on_entertainment_stop() -> None:
         _cancel_watchdog()
-        await engine.async_restore_lights()
-        async_dispatcher_send(hass, SIGNAL_ENTERTAINMENT_CHANGED)
+        await _async_stop_entertainment_session()
 
     api_server.set_entertainment_callbacks(_on_entertainment_start, _on_entertainment_stop)
     # TV "classic" mode (no DTLS stream): per-light REST commands follow the
     # same Zigbee-paced drain loop.
     api_server.set_light_command_callback(engine.handle_light_command)
+
+    async def _async_handle_pause(call: ServiceCall) -> None:
+        for loaded_entry in hass.config_entries.async_loaded_entries(DOMAIN):
+            await loaded_entry.runtime_data.engine.async_pause(call.data[ATTR_SECONDS])
+
+    async def _async_handle_resume(call: ServiceCall) -> None:
+        for loaded_entry in hass.config_entries.async_loaded_entries(DOMAIN):
+            await loaded_entry.runtime_data.engine.async_resume()
+
+    async def _async_handle_release(call: ServiceCall) -> None:
+        for loaded_entry in hass.config_entries.async_loaded_entries(DOMAIN):
+            # Advisory: tell a compliant TV the stream is over (it may notice
+            # on its next poll and disconnect on its own). Independent of
+            # engine.async_release()'s own guaranteed local suppression —
+            # see README "Pause, resume, release".
+            loaded_entry.runtime_data.api_server.clear_entertainment()
+            await loaded_entry.runtime_data.engine.async_release(call.data[ATTR_SECONDS])
+
+    if not hass.services.has_service(DOMAIN, SERVICE_PAUSE):
+        # Domain-scoped, not per-entry: this integration only ever expects one
+        # bridge, so registering once (guarded, since async_setup_entry can
+        # re-run on reload) and fanning out over async_loaded_entries covers
+        # it without per-entry bookkeeping. Deliberately not unregistered on
+        # unload — the fan-out over zero loaded entries is a harmless no-op,
+        # and correct unregister-on-last-unload bookkeeping isn't worth it
+        # for an integration that in practice has exactly one entry.
+        hass.services.async_register(DOMAIN, SERVICE_PAUSE, _async_handle_pause, _SECONDS_SCHEMA)
+        hass.services.async_register(DOMAIN, SERVICE_RESUME, _async_handle_resume)
+        hass.services.async_register(
+            DOMAIN, SERVICE_RELEASE, _async_handle_release, _SECONDS_SCHEMA
+        )
 
     # Runtime objects for the platforms, the options flow and diagnostics
     entry.runtime_data = HueEntertainmentData(

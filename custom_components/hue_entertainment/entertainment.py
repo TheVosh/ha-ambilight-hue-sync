@@ -11,9 +11,13 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
+from homeassistant.core import callback
+from homeassistant.helpers.event import async_call_later
 from homeassistant.helpers.state import async_reproduce_state
 
 if TYPE_CHECKING:
+    from datetime import datetime
+
     from homeassistant.core import HomeAssistant, State
 
 from .const import (
@@ -21,9 +25,11 @@ from .const import (
     CIE_TOLERANCE,
     CLASSIC_DRAIN_IDLE,
     COLOR_SPACE_XY,
+    DEFAULT_YIELD_SECONDS,
     HUESTREAM_CHANNEL_SIZE,
     HUESTREAM_HEADER,
     HUESTREAM_HEADER_SIZE,
+    RESTORE_TIMEOUT,
     RESTORE_TRANSITION,
 )
 
@@ -226,9 +232,16 @@ class EntertainmentEngine:
         self,
         hass: HomeAssistant,
         light_mappings: list[LightMapping],
+        notify: Callable[[], None] | None = None,
     ) -> None:
         self._hass = hass
         self._mappings = {m.channel_id: m for m in light_mappings}
+        # Fired on every state transition (session start/stop, drain
+        # start/stop, pause/resume/release) — the single source of truth
+        # the binary_sensor/status sensor listen to. Never delayed behind
+        # anything that can hang (e.g. the light restore) — see
+        # async_restore_lights.
+        self._notify = notify or (lambda: None)
         self._total_frames_received = 0
         self._total_commands_sent = 0
         self._window_received = 0
@@ -239,7 +252,28 @@ class EntertainmentEngine:
         self._active: bool = False
         self._saved_states: list[State] | None = None
         self._drain_task: asyncio.Task | None = None
+        # True for as long as the drain loop is doing work — set synchronously
+        # when the task is created, cleared in the loop's own `finally` (which
+        # runs on every exit path, not just the clean one). Task.done() is
+        # NOT used for this: it only flips after the coroutine has fully
+        # unwound, which is too late — a command arriving in that window
+        # would find done()==False and be silently dropped with no new task
+        # started. See _ensure_drain_task / _drain_loop.
+        self._drain_running: bool = False
         self._wake = asyncio.Event()  # set whenever a slot becomes dirty
+
+        # --- pause() / release() state — see README "Pause, resume, release"
+        # for the full caller-facing contract these fields implement.
+        self._paused_until: float | None = None  # monotonic deadline; None = not paused
+        self._pause_cancel: Callable[[], None] | None = None
+        self._releasing: bool = False
+        # True once the release grace period has elapsed without the TV
+        # voluntarily disconnecting — from this point handle_frame stops
+        # feeding last_frame_time, so the *existing* FRAME_TIMEOUT watchdog
+        # detects "silence" and tears the session down through the normal
+        # path. No separate forced-teardown mechanism needed.
+        self._release_forcing: bool = False
+        self._release_cancel: Callable[[], None] | None = None
 
     def _log_fps(self, now: float) -> None:
         """Log FPS stats if the 5-second window has elapsed, then reset counters."""
@@ -270,9 +304,13 @@ class EntertainmentEngine:
         if parsed is None:
             return
 
-        # Update last_frame_time on every valid frame so the watchdog can detect silence
         now = time.monotonic()
-        self.last_frame_time = now
+        if not self._release_forcing:
+            # Update last_frame_time on every valid frame so the watchdog can
+            # detect silence. Once forcing a release, this deliberately stops:
+            # pretending the frames went silent is what makes the *existing*
+            # watchdog tear the session down for us — see async_release().
+            self.last_frame_time = now
 
         api_version, color_space, channels = parsed
 
@@ -293,6 +331,12 @@ class EntertainmentEngine:
 
         self._log_fps(now)
 
+        if self._suppressed:
+            # Paused or releasing: the frame still counts toward the session
+            # totals above (an honest count of what the TV sent), but its
+            # effect on the lights is dropped.
+            return
+
         # Write freshest colour into per-light slots (drain loop sends them)
         for channel in channels:
             self._schedule_update(channel, color_space)
@@ -302,6 +346,8 @@ class EntertainmentEngine:
         """Counters for diagnostics."""
         return {
             "active": self._active,
+            "status": self.status,
+            "status_attributes": self.status_attributes,
             "lights": [m.entity_id for m in self._mappings.values()],
             "session_frames_received": self._total_frames_received,
             "session_commands_sent": self._total_commands_sent,
@@ -315,8 +361,72 @@ class EntertainmentEngine:
 
     @property
     def is_active(self) -> bool:
-        """True while entertainment mode is in progress."""
+        """True while a DTLS entertainment stream is in progress."""
         return self._active
+
+    @property
+    def _is_paused(self) -> bool:
+        """Wall-clock derived, not a raw flag flipped by a timer callback.
+
+        A pause can never outlive its own deadline even if the scheduled
+        expiry callback is somehow lost — the exact "stuck forever, no
+        signal" shape this integration's other bugs had. The callback exists
+        only to fire `_notify()` promptly; correctness doesn't depend on it.
+        """
+        return self._paused_until is not None and time.monotonic() < self._paused_until
+
+    @property
+    def _suppressed(self) -> bool:
+        """True while paused or releasing — frame/command effects are dropped."""
+        return self._is_paused or self._releasing
+
+    @property
+    def is_driving_lights(self) -> bool:
+        """True while the bridge is actually writing to these lights right now.
+
+        Broader than `is_active`: also true during classic-mode (plain REST,
+        no DTLS stream) sessions. False while paused or releasing, even if
+        the underlying session/traffic technically continues — the whole
+        point of pausing or releasing is "don't count on the bridge right
+        now," so callers deciding whether to treat these lights as claimed
+        should see False. See `status` for *why* it's false.
+        """
+        return not self._suppressed and (self._active or self._drain_running)
+
+    @property
+    def status(self) -> str:
+        """One of: idle, streaming, classic, paused, releasing.
+
+        Single source of truth for the status sensor, derived from the more
+        primitive fields below rather than tracked as its own variable — so
+        it can never drift out of sync with what those fields actually say.
+        Precedence: paused/releasing (a suppression request) always displays
+        over whatever activity happens to be live underneath it; the
+        underlying activity is still visible via `status_attributes`.
+        """
+        if self._releasing:
+            return "releasing"
+        if self._is_paused:
+            return "paused"
+        if self._active:
+            return "streaming"
+        if self._drain_running:
+            return "classic"
+        return "idle"
+
+    @property
+    def status_attributes(self) -> dict[str, Any]:
+        """Diagnostic detail behind `status` — how long, and underneath what."""
+        attrs: dict[str, Any] = {}
+        if self._is_paused and self._paused_until is not None:
+            attrs["paused_remaining_seconds"] = round(self._paused_until - time.monotonic(), 1)
+        if self._releasing:
+            attrs["release_forcing"] = self._release_forcing
+        if self._releasing or self._is_paused:
+            attrs["underlying_activity"] = "streaming" if self._active else (
+                "classic" if self._drain_running else "idle"
+            )
+        return attrs
 
     def reset_stats(self) -> None:
         """Log session totals and reset counters (call when streaming stops)."""
@@ -349,12 +459,22 @@ class EntertainmentEngine:
             m.last_sent = 0.0
 
     def _ensure_drain_task(self) -> None:
-        if self._drain_task is None or self._drain_task.done():
+        if not self._drain_running:
             self._drain_task = self._hass.async_create_task(self._drain_loop())
+            self._drain_running = True
+            self._notify()
 
     async def async_snapshot_lights(self) -> None:
         """Snapshot current light states so they can be restored after entertainment."""
-        if self._active:
+        if self._releasing:
+            # A new session starting while we were waiting for the old one to
+            # end (or force it) IS that resolution — the TV showing up again
+            # is exactly what release() was waiting for. Resolve it and fall
+            # through to a normal, fresh snapshot rather than treating this
+            # as "already active" below (there is nothing stale left to keep:
+            # release() already discarded the old restore target).
+            self._cancel_release()
+        elif self._active:
             # A second stream.active=true mid-session (TV re-toggle) must not
             # overwrite the pre-entertainment snapshot with streaming colours.
             _LOGGER.debug("Entertainment already active; keeping existing snapshot")
@@ -368,15 +488,27 @@ class EntertainmentEngine:
         self._reset_mappings()
         self._active = True
         self.last_frame_time = time.monotonic()
+        self._notify()
         self._ensure_drain_task()
         _LOGGER.info("Snapshotted %d light states for restore", len(states))
 
     async def async_restore_lights(self) -> None:
-        """Restore lights to their pre-entertainment state (idempotent)."""
+        """Restore lights to their pre-entertainment state (idempotent).
+
+        Flips `_active` and notifies listeners *before* attempting the
+        restore itself — a light that never answers the restore call must
+        not leave the sensor reporting stale "active" state. The restore is
+        bounded by RESTORE_TIMEOUT for the same reason.
+
+        Also the one place every teardown path converges: the TV's own clean
+        disconnect, the frame watchdog (silence — genuine, or manufactured by
+        an in-progress release), and unload/shutdown all end up here. Any
+        pending release is resolved here too, whichever end-trigger fired.
+        """
         if not self._active:
             return
         self._active = False
-        # Stop the drain loop
+        self._cancel_release()
         if self._drain_task is not None and not self._drain_task.done():
             self._drain_task.cancel()
             try:
@@ -384,20 +516,129 @@ class EntertainmentEngine:
             except asyncio.CancelledError:
                 pass
             self._drain_task = None
+        self._notify()
         saved = self._saved_states
         self._saved_states = None
         self.reset_stats()
         if saved:
             try:
-                await async_reproduce_state(
-                    self._hass,
-                    saved,
-                    reproduce_options={"transition": RESTORE_TRANSITION},
+                await asyncio.wait_for(
+                    async_reproduce_state(
+                        self._hass,
+                        saved,
+                        reproduce_options={"transition": RESTORE_TRANSITION},
+                    ),
+                    timeout=RESTORE_TIMEOUT,
                 )
+            except TimeoutError:
+                _LOGGER.warning(
+                    "Restoring %d lights timed out after %.1fs", len(saved), RESTORE_TIMEOUT
+                )
+                return
             except Exception as err:  # noqa: BLE001 — best effort (e.g. ZHA already down at shutdown)
                 _LOGGER.warning("Could not restore %d lights: %s", len(saved), err)
                 return
             _LOGGER.info("Restored %d lights to pre-entertainment state", len(saved))
+
+    async def async_pause(self, seconds: float) -> None:
+        """Suppress frame/command effects for `seconds`, then resume automatically.
+
+        A courtesy gap for radio contention — unlike release(), no intent
+        about these lights has changed, so nothing about the session (if any)
+        is touched: last_frame_time keeps advancing normally, and no restore
+        target is discarded. Never blocks a session from starting — a DTLS
+        handshake or classic command still completes normally while paused;
+        only the resulting light effect is dropped (see `handle_frame` /
+        `handle_light_command`).
+
+        Contract: a `release()` already in progress wins — pausing on top of
+        it would let its later auto-expiry silently cancel the release, so
+        this is a no-op while releasing. Calling pause() again while already
+        paused resets the timer to a fresh `seconds` from now (last call
+        wins), regardless of how much time was left on the previous one.
+        """
+        if self._releasing:
+            _LOGGER.debug("pause() ignored: a release is already in progress")
+            return
+        self._cancel_pause()
+        resolved = seconds if seconds > 0 else DEFAULT_YIELD_SECONDS
+        self._paused_until = time.monotonic() + resolved
+        self._notify()
+        self._pause_cancel = async_call_later(self._hass, resolved, self._on_pause_expired)
+
+    async def async_resume(self) -> None:
+        """Cancel an in-progress pause early. No-op if not paused, or if releasing.
+
+        Releasing has no caller-triggered counterpart — see async_release().
+        """
+        if self._releasing or self._paused_until is None:
+            return
+        self._cancel_pause()
+        self._notify()
+
+    async def async_release(self, seconds: float) -> None:
+        """Stop driving these lights until a new session genuinely begins.
+
+        Unlike pause, this discards the pending restore target immediately:
+        whatever the caller's sweep left the lights doing is now correct,
+        and there is nothing to restore back to. Frame/command effects are
+        dropped immediately too.
+
+        `seconds` is a polite grace period, paired with the API-visible
+        `stream.active` flag the caller flips separately (see the `release`
+        service in __init__.py) — a compliant TV notices and disconnects on
+        its own within it, producing a clean, ordinary teardown through
+        async_restore_lights. If it doesn't, this stops feeding
+        last_frame_time once the grace period elapses, so the *existing*
+        FRAME_TIMEOUT watchdog detects "silence" and forces the same
+        teardown — no separate forced-disconnect mechanism needed. Either
+        way, this integration never leaves you waiting on the TV forever:
+        worst case is `seconds` + FRAME_TIMEOUT.
+
+        Contract: supersedes an in-progress pause (an intent change always
+        wins over a courtesy gap). Calling release() again while already
+        releasing restarts the grace period — safe for a caller unsure
+        whether an earlier call landed.
+        """
+        self._cancel_pause()
+        resolved = seconds if seconds > 0 else DEFAULT_YIELD_SECONDS
+        self._saved_states = None  # nothing to restore — the caller's new state IS correct
+        self._releasing = True
+        self._release_forcing = False
+        self._notify()
+        if self._release_cancel is not None:
+            self._release_cancel()
+        self._release_cancel = async_call_later(self._hass, resolved, self._on_release_grace_expired)
+
+    def _cancel_pause(self) -> None:
+        self._paused_until = None
+        if self._pause_cancel is not None:
+            self._pause_cancel()
+            self._pause_cancel = None
+
+    def _cancel_release(self) -> None:
+        was_releasing = self._releasing
+        self._releasing = False
+        self._release_forcing = False
+        if self._release_cancel is not None:
+            self._release_cancel()
+            self._release_cancel = None
+        if was_releasing:
+            self._notify()
+
+    @callback
+    def _on_pause_expired(self, _now: datetime) -> None:
+        self._paused_until = None
+        self._pause_cancel = None
+        self._notify()
+
+    @callback
+    def _on_release_grace_expired(self, _now: datetime) -> None:
+        self._release_cancel = None
+        if not self._releasing:
+            return  # already resolved (TV reconnected, or restore already ran)
+        self._release_forcing = True
+        self._notify()
 
     async def _drain_loop(self) -> None:
         """Adaptive round-robin: send the freshest colour per light, one at a time.
@@ -408,6 +649,21 @@ class EntertainmentEngine:
         """
         mappings = list(self._mappings.values())
         idle_since: float | None = None
+        try:
+            await self._drain_until_idle_or_cancelled(mappings, idle_since)
+        finally:
+            # Runs on every exit — the clean idle-timeout return, a
+            # cancellation, or any other exception escaping the loop below.
+            # Without this, an exception other than CancelledError would
+            # leave _drain_running stuck True forever: no task, nothing to
+            # cancel it, and _ensure_drain_task's guard would then refuse to
+            # ever start a fresh one for a later classic command.
+            self._drain_running = False
+            self._notify()
+
+    async def _drain_until_idle_or_cancelled(
+        self, mappings: list[LightMapping], idle_since: float | None
+    ) -> None:
         try:
             while True:
                 self._wake.clear()
@@ -483,6 +739,12 @@ class EntertainmentEngine:
         ``xy`` and ``bri`` as separate requests) and drained at Zigbee pace.
         No snapshot/restore: like a real bridge, the lights just follow.
         """
+        if self._suppressed:
+            # Paused or releasing: drop it, don't queue it. Classic mode is a
+            # continuous stream of updates like DTLS frames are — the TV will
+            # send another one on its next paint tick once suppression ends,
+            # so there's nothing worth buffering.
+            return
         mapping = self._mappings.get(light_id)
         if mapping is None:
             return

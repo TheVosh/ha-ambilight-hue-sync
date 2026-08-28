@@ -22,6 +22,46 @@ _helpers_state = MagicMock()
 _helpers_state.async_reproduce_state = AsyncMock()
 sys.modules["homeassistant.helpers.state"] = _helpers_state
 
+# `homeassistant.core.callback` is a decorator that must return the original
+# function unchanged — a bare MagicMock would instead replace the decorated
+# method with an auto-generated mock, silently breaking anything that later
+# calls it (e.g. async_call_later's scheduled action).
+sys.modules["homeassistant.core"].callback = lambda f: f
+
+# Fake async_call_later: records (delay, action, cancelled) instead of
+# scheduling real time, so tests fire pause/release timers deterministically
+# by calling the recorded action directly — see FakeCallLater below.
+_helpers_event = MagicMock()
+
+
+class FakeCallLater:
+    """One scheduled call recorded by the fake async_call_later."""
+
+    def __init__(self, delay, action):
+        self.delay = delay
+        self.action = action
+        self.cancelled = False
+
+    def cancel(self):
+        self.cancelled = True
+
+    def fire(self):
+        """Invoke the scheduled action as if its delay had elapsed."""
+        return self.action(None)
+
+
+scheduled_calls: list[FakeCallLater] = []
+
+
+def _fake_async_call_later(hass, delay, action):
+    call = FakeCallLater(delay, action)
+    scheduled_calls.append(call)
+    return call.cancel
+
+
+_helpers_event.async_call_later = _fake_async_call_later
+sys.modules["homeassistant.helpers.event"] = _helpers_event
+
 _base = Path(__file__).parent.parent / "custom_components" / "hue_entertainment"
 
 

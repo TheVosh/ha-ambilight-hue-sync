@@ -1,0 +1,33 @@
+# The `max: 30` on both `seconds` selectors below must match
+# const.MAX_YIELD_SECONDS — this file can't import it, so if that constant
+# ever changes, update both here too. The actual enforcement is server-side
+# (the service schema in __init__.py), this is just the UI's own bound so
+# Developer Tools doesn't offer a value the call would then reject.
+pause:
+  fields:
+    seconds:
+      required: false
+      example: 5
+      default: 0
+      selector:
+        number:
+          min: 0
+          max: 30
+          step: 0.5
+          unit_of_measurement: seconds
+
+resume:
+  fields: {}
+
+release:
+  fields:
+    seconds:
+      required: false
+      example: 2
+      default: 0
+      selector:
+        number:
+          min: 0
+          max: 30
+          step: 0.5
+          unit_of_measurement: seconds

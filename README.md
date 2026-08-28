@@ -55,6 +55,93 @@ The integration:
 - **No port juggling on HA 2026.8+** — when Home Assistant listens on port 80 the Hue API rides on HA's own web server
 - **Resilient** — options apply without a restart, unavailable lights are skipped, bind failures are reported cleanly
 - **Diagnostics** — downloadable diagnostics (credentials redacted) and a bridge device grouping the entities
+- **Pause / release** — services other automations can call to coordinate Zigbee airtime or an intent change (e.g. a lighting sweep) with the bridge; see below
+
+## Pause, resume, release
+
+The bridge writes to real Zigbee lights, which means it can end up sharing a
+radio with — and colliding with — anything else that also controls those
+lights: a script sweeping a room's lights off, a firmware update on a nearby
+device, anything sending a burst of commands. Three services let another
+automation coordinate with the bridge instead of fighting it.
+
+### `hue_entertainment.pause` — a courtesy gap
+
+Suppresses the bridge's effect on its lights for `seconds` (default, or
+`seconds: 0`, is a couple of seconds; capped at 30s), then resumes
+automatically. Nothing about what these lights should look like has
+changed — the session, if any, is left completely alone underneath: frames
+or classic-mode commands keep arriving and keep being counted, they're just
+not applied. A DTLS handshake or classic command is never blocked by a
+pause; only its *effect* on the lights is dropped. Use this for a brief
+"let something else get a word in edgewise" gap.
+
+### `hue_entertainment.resume` — end a pause early
+
+Cancels an in-progress pause immediately, before its timer would have. No
+effect if nothing is paused, or if a release is already in progress (see
+below — release has no early-cancel counterpart of its own).
+
+### `hue_entertainment.release` — an intent change
+
+For when what these lights *should* be doing has actually changed — the
+canonical case is a bedtime or arm-away lighting sweep that wants these
+lights to switch off and *stay* off, not relight the moment the TV sends
+its next frame. Release:
+
+1. Discards the pending restore target immediately. The whole point is that
+   whatever the caller just set is now correct — there is nothing to
+   restore back to, so a session ending later won't relight the room.
+2. Drops frame/command effects immediately, same as pause.
+3. Flips the bridge's `stream.active` flag to `false`, so a well-behaved TV
+   notices on its next check and disconnects on its own — producing a
+   clean, ordinary teardown.
+4. If the TV doesn't comply within `seconds` (default/`0` → a couple of
+   seconds, capped at 30s), forces the same teardown anyway: the bridge
+   simply stops feeding the *existing* dead-stream watchdog, which then
+   fires on schedule and tears the session down through the normal path.
+   No separate forced-disconnect mechanism exists or is needed — released
+   worst-case wait is bounded at `seconds` + the watchdog's own timeout,
+   never indefinite.
+
+A new session starting while a release is still pending (the TV
+reconnects) *is* the release resolving — it's treated as the old session
+ending and a fresh one beginning, with a fresh snapshot, not as "already
+active."
+
+### The contract between them
+
+These are documented guarantees, not implementation happenstance — a
+caller shouldn't need to know what else might be calling these services to
+reason about the outcome:
+
+- **`release` always wins over an in-flight `pause`.** An intent change
+  supersedes a courtesy gap; pausing on top of a release and letting the
+  pause's own timer later re-enable things would silently undo the release.
+- **`pause` is a no-op while a release is in progress.** Effects are
+  already suppressed; letting a pause's later auto-expiry interfere with
+  the release would be exactly the same problem in reverse.
+- **`resume` is a no-op while releasing**, and a no-op if nothing is
+  paused. Release has no caller-triggered early-cancel — it resolves via
+  the TV reconnecting, or via its own grace-period timeout, never via a
+  service call.
+- **Calling `pause` again while already paused** resets the timer to a
+  fresh `seconds` from the moment of the new call (last call wins), not
+  the longer or shorter of the two.
+- **Calling `release` again while already releasing** restarts its grace
+  period the same way — safe for a caller that isn't sure an earlier call
+  landed.
+
+### Observability
+
+`binary_sensor.*_ambilight_active` (entity ID depends on your instance)
+answers one question only: is the bridge driving these lights *right now*
+— true for both a DTLS stream and classic mode, false while paused or
+releasing regardless of what's happening underneath. For *why* it's off —
+paused with how much time left, or releasing and whether it's still
+waiting politely on the TV or already forcing — see the accompanying
+`sensor.*_status` entity, whose state is one of `idle` / `streaming` /
+`classic` / `paused` / `releasing`.
 
 ## Requirements
 
