@@ -34,7 +34,9 @@ async def async_setup_entry(
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     """Set up the entertainment active binary sensor."""
-    async_add_entities([HueEntertainmentBinarySensor(entry)])
+    async_add_entities(
+        [HueEntertainmentBinarySensor(entry), HueEntertainmentConnectedBinarySensor(entry)]
+    )
 
 
 class HueEntertainmentBinarySensor(BinarySensorEntity):
@@ -82,3 +84,31 @@ class HueEntertainmentBinarySensor(BinarySensorEntity):
             return {}
         owner = self._api_server.entertainment_owner
         return {"owner": owner} if owner else {}
+
+
+class HueEntertainmentConnectedBinarySensor(BinarySensorEntity):
+    """Reports whether the configured output session is established."""
+
+    _attr_has_entity_name = True
+    _attr_translation_key = "connected"
+    _attr_device_class = BinarySensorDeviceClass.CONNECTIVITY
+    _attr_should_poll = False
+
+    def __init__(self, entry: HueEntertainmentConfigEntry) -> None:
+        data = entry.runtime_data
+        self._control = data.control
+        self._attr_unique_id = f"{entry.entry_id}_connected"
+        self._attr_device_info = bridge_device_info(data)
+
+    async def async_added_to_hass(self) -> None:
+        self.async_on_remove(
+            async_dispatcher_connect(self.hass, SIGNAL_ENTERTAINMENT_CHANGED, self._on_changed)
+        )
+
+    @callback
+    def _on_changed(self) -> None:
+        self.async_write_ha_state()
+
+    @property
+    def is_on(self) -> bool:
+        return self._control.connected

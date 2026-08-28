@@ -293,7 +293,11 @@ class EntertainmentEngine:
         self._window_commands = 0
         self._fps_time = now
 
-    def handle_frame(self, data: bytes) -> None:
+    def handle_frame(
+        self,
+        data: bytes,
+        channel_handler: Callable[[list[ChannelColor], int], None] | None = None,
+    ) -> None:
         """Parse a HueStream frame and update per-light colour slots.
 
         Every valid frame overwrites the per-light slots with the freshest
@@ -331,7 +335,7 @@ class EntertainmentEngine:
 
         self._log_fps(now)
 
-        self.handle_channels(channels, color_space)
+        (channel_handler or self.handle_channels)(channels, color_space)
 
     def handle_channels(self, channels: list[ChannelColor], color_space: int) -> None:
         """Accept already-normalized channels from the shared frame router."""
@@ -383,6 +387,11 @@ class EntertainmentEngine:
     def _suppressed(self) -> bool:
         """True while paused or releasing — frame/command effects are dropped."""
         return self._is_paused or self._releasing
+
+    @property
+    def output_suppressed(self) -> bool:
+        """Whether output transports must currently discard frame effects."""
+        return self._suppressed
 
     @property
     def is_driving_lights(self) -> bool:

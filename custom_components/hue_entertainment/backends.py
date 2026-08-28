@@ -40,6 +40,19 @@ class EntertainmentOutputBackend(ABC):
     async def async_close(self) -> None:
         """Release resources. Backends without resources need no override."""
 
+    @property
+    def available(self) -> bool:
+        """Whether this output has enough configuration to run."""
+        return True
+
+    @property
+    @abstractmethod
+    def connected(self) -> bool:
+        """Whether this output currently has an active connection/session."""
+
+    def handle_light_command(self, light_id: int, body: dict[str, Any]) -> None:
+        """Accept a classic Hue REST command when supported by the backend."""
+
 
 class HomeAssistantLightBackend(EntertainmentOutputBackend):
     """The legacy HA/ZHA output path, including state restore and coalescing."""
@@ -55,6 +68,10 @@ class HomeAssistantLightBackend(EntertainmentOutputBackend):
 
     async def async_stop(self) -> None:
         await self.engine.async_restore_lights()
+
+    @property
+    def connected(self) -> bool:
+        return self.engine.is_active or self.engine.is_driving_lights
 
     def handle_light_command(self, light_id: int, body: dict[str, Any]) -> None:
         """Keep the non-streaming Hue v1 compatibility path on HA lights."""
@@ -72,6 +89,14 @@ class DisabledOutputBackend(EntertainmentOutputBackend):
 
     async def async_stop(self) -> None:
         return
+
+    @property
+    def available(self) -> bool:
+        return False
+
+    @property
+    def connected(self) -> bool:
+        return False
 
     @property
     def stats(self) -> dict[str, Any]:
@@ -110,6 +135,7 @@ class HueEntertainmentBackend(EntertainmentOutputBackend):
         self._last_send = 0.0
         self._frames_sent = 0
         self._reconnects = 0
+        self._restart_required = False
         self._start_lock = asyncio.Lock()
 
     @property
@@ -123,14 +149,21 @@ class HueEntertainmentBackend(EntertainmentOutputBackend):
             "streaming": bool(self._session and self._session.is_streaming),
         }
 
+    @property
+    def connected(self) -> bool:
+        return bool(self._session and self._session.is_streaming and not self._restart_required)
+
     async def async_start(self) -> None:
         async with self._start_lock:
-            if self._session is not None and self._session.is_streaming:
+            if self.connected:
                 return
             # Imported here so HA can install the manifest requirement before
             # importing the integration and unit tests can exercise old code alone.
             EntertainmentSession = _hue_symbol("EntertainmentSession")
 
+            if self._restart_required and self._session is not None:
+                await self._session.aclose()
+                self._session = None
             if self._session is None:
                 self._session = EntertainmentSession(
                     self._host, self._app_key, self._client_key, idle_timeout=0
@@ -139,8 +172,10 @@ class HueEntertainmentBackend(EntertainmentOutputBackend):
                 await self._session.start(self._area_id)
             except Exception as err:  # bridge may be offline; next TV start retries
                 self._reconnects += 1
+                self._restart_required = True
                 _LOGGER.warning("Unable to start physical Hue Entertainment stream: %s", err)
                 raise
+            self._restart_required = False
             _LOGGER.debug("Physical Hue Entertainment session started for area %s", self._area_id)
 
     def send_frame(self, channels: list[ChannelColor], color_space: int) -> None:
@@ -167,17 +202,20 @@ class HueEntertainmentBackend(EntertainmentOutputBackend):
             self._session.send(commands)
             self._frames_sent += 1
         except Exception:  # recover on the next explicit TV stream start; never block input
+            self._restart_required = True
             _LOGGER.debug("Hue Entertainment send failed; session will be recreated", exc_info=True)
 
     async def async_stop(self) -> None:
         if self._session is not None:
             await self._session.stop()
+            self._restart_required = False
             _LOGGER.debug("Physical Hue Entertainment session stopped")
 
     async def async_close(self) -> None:
         if self._session is not None:
             await self._session.aclose()
             self._session = None
+            self._restart_required = False
 
     def _adjust(self, red: int, green: int, blue: int) -> tuple[int, int, int]:
         hue, saturation, value = colorsys.rgb_to_hsv(red / 65535, green / 65535, blue / 65535)
