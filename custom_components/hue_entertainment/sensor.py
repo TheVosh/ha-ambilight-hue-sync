@@ -19,7 +19,16 @@ if TYPE_CHECKING:
 # Keep in sync with EntertainmentEngine.status — that property is the single
 # source of truth this sensor reads from; this list only needs to match its
 # possible return values.
-STATUS_OPTIONS = ["idle", "streaming", "classic", "paused", "releasing"]
+STATUS_OPTIONS = [
+    "disabled",
+    "idle",
+    "connecting",
+    "streaming",
+    "classic",
+    "paused",
+    "releasing",
+    "error",
+]
 
 
 async def async_setup_entry(
@@ -58,6 +67,7 @@ class HueEntertainmentStatusSensor(SensorEntity):
 
     def __init__(self, entry: HueEntertainmentConfigEntry) -> None:
         data = entry.runtime_data
+        self._control = data.control
         self._engine = data.engine
         self._attr_unique_id = f"{entry.entry_id}_status"
         self._attr_device_info = bridge_device_info(data)
@@ -73,8 +83,8 @@ class HueEntertainmentStatusSensor(SensorEntity):
 
     @property
     def native_value(self) -> str:
-        return self._engine.status
+        return self._control.status
 
     @property
     def extra_state_attributes(self) -> dict:
-        return self._engine.status_attributes
+        return {**self._engine.status_attributes, **self._control.stats}

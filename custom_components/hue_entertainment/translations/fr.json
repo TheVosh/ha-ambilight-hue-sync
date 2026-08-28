@@ -3,17 +3,23 @@
     "binary_sensor": {
       "entertainment_active": {
         "name": "Ambilight actif"
+      },
+      "connected": {
+        "name": "Connecté"
       }
     },
     "sensor": {
       "status": {
         "name": "État",
         "state": {
+          "disabled": "Désactivé",
           "idle": "Inactif",
+          "connecting": "Connexion",
           "streaming": "Diffusion",
           "classic": "Mode classique",
           "paused": "En pause",
-          "releasing": "Libération"
+          "releasing": "Libération",
+          "error": "Erreur"
         }
       }
     }

@@ -63,6 +63,7 @@ from custom_components.hue_entertainment.const import (  # noqa: E402
     INPUT_LEGACY_HUESTREAM,
     INPUT_PHILIPS_JOINTSPACE,
 )
+from custom_components.hue_entertainment.entertainment import ChannelColor  # noqa: E402
 
 BRIDGE_ID = "001788FFFE0AB1C2"
 LIGHTS = ["light.a", "light.b"]
@@ -310,6 +311,207 @@ async def test_stream_start_turns_sensor_on_and_watchdog_stops_it(hass: HomeAssi
         assert not data.engine.is_active
         assert not data.api_server.entertainment_active
 
+        assert await hass.config_entries.async_unload(entry.entry_id)
+
+
+async def test_sync_light_controls_runtime_power_connection_and_intensity(
+    hass: HomeAssistant,
+) -> None:
+    entry = await _setup(hass, _entry())
+    registry = er.async_get(hass)
+    light_entity = registry.async_get_entity_id(
+        "light", DOMAIN, f"{entry.entry_id}_ambilight_hue_sync"
+    )
+    connected_entity = registry.async_get_entity_id(
+        "binary_sensor", DOMAIN, f"{entry.entry_id}_connected"
+    )
+    status_entity = registry.async_get_entity_id("sensor", DOMAIN, f"{entry.entry_id}_status")
+    assert light_entity == "light.ambilight_hue_sync"
+    assert connected_entity is not None
+    assert status_entity is not None
+    assert hass.states.get(light_entity).state == "on"
+    assert hass.states.get(light_entity).attributes["brightness"] == 255
+
+    data = entry.runtime_data
+    await data.api_server._set_entertainment_active(True, "tvuser")
+    assert hass.states.get(connected_entity).state == "on"
+    assert hass.states.get(status_entity).state == "streaming"
+
+    await hass.services.async_call("light", "turn_off", {"entity_id": light_entity}, blocking=True)
+    assert hass.states.get(light_entity).state == "off"
+    assert hass.states.get(connected_entity).state == "off"
+    assert hass.states.get(status_entity).state == "disabled"
+    assert not data.api_server.entertainment_active
+    assert not data.engine.is_active
+
+    # A TV cannot restart output while the persistent control is disabled.
+    await data.api_server._set_entertainment_active(True, "tvuser")
+    assert not data.api_server.entertainment_active
+    assert not data.engine.is_active
+
+    await hass.services.async_call(
+        "light",
+        "turn_on",
+        {"entity_id": light_entity, "brightness": 128},
+        blocking=True,
+    )
+    assert hass.states.get(light_entity).state == "on"
+    assert hass.states.get(light_entity).attributes["brightness"] == 128
+    assert data.control.intensity == pytest.approx(128 / 255)
+
+    await data.api_server._set_entertainment_active(True, "tvuser")
+    assert data.engine.is_active
+    assert hass.states.get(connected_entity).state == "on"
+
+    # Home Assistant light semantics treat an explicit zero brightness as off.
+    await hass.services.async_call(
+        "light",
+        "turn_on",
+        {"entity_id": light_entity, "brightness": 0},
+        blocking=True,
+    )
+    assert hass.states.get(light_entity).state == "off"
+    assert not data.engine.is_active
+    assert await hass.config_entries.async_unload(entry.entry_id)
+
+
+async def test_sync_light_state_persists_across_entry_reload(hass: HomeAssistant) -> None:
+    entry = await _setup(hass, _entry())
+    light_entity = er.async_get(hass).async_get_entity_id(
+        "light", DOMAIN, f"{entry.entry_id}_ambilight_hue_sync"
+    )
+    await hass.services.async_call(
+        "light",
+        "turn_on",
+        {"entity_id": light_entity, "brightness": 64},
+        blocking=True,
+    )
+    await hass.services.async_call("light", "turn_off", {"entity_id": light_entity}, blocking=True)
+    assert await hass.config_entries.async_unload(entry.entry_id)
+
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    restored = hass.states.get(light_entity)
+    assert restored.state == "off"
+    assert entry.runtime_data.control.intensity == pytest.approx(64 / 255)
+    await hass.services.async_call("light", "turn_on", {"entity_id": light_entity}, blocking=True)
+    assert hass.states.get(light_entity).attributes["brightness"] == 64
+    assert await hass.config_entries.async_unload(entry.entry_id)
+
+
+async def test_enabled_sync_resumes_on_jointspace_frame_after_reload(hass: HomeAssistant) -> None:
+    """An enabled persisted control lets valid JointSpace input restart its output."""
+    sources = []
+    backends = []
+
+    class FakeJointSpaceSource:
+        def __init__(
+            self,
+            _session,
+            _host,
+            _username,
+            _password,
+            _channel_positions,
+            frame_callback,
+            **_kwargs,
+        ) -> None:
+            self.frame_callback = frame_callback
+            sources.append(self)
+
+        def set_inactivity_callback(self, _callback, _timeout) -> None:
+            pass
+
+        async def async_start(self) -> None:
+            pass
+
+        async def async_close(self) -> None:
+            pass
+
+        @property
+        def stats(self) -> dict:
+            return {}
+
+    class FakeHueBackend:
+        def __init__(self, *_args, **_kwargs) -> None:
+            self.started = False
+            self.frames = []
+            backends.append(self)
+
+        @property
+        def available(self) -> bool:
+            return True
+
+        @property
+        def connected(self) -> bool:
+            return self.started
+
+        async def async_start(self) -> None:
+            self.started = True
+
+        def send_frame(self, channels, color_space) -> None:
+            if self.started:
+                self.frames.append((channels, color_space))
+
+        async def async_stop(self) -> None:
+            self.started = False
+
+        async def async_close(self) -> None:
+            self.started = False
+
+        @property
+        def stats(self) -> dict:
+            return {}
+
+    entry = _entry(
+        **{
+            CONF_INPUT_MODE: INPUT_PHILIPS_JOINTSPACE,
+            CONF_OUTPUT_BACKEND: BACKEND_HUE,
+            CONF_OUTPUT_CONFIGURED: True,
+            CONF_TV_HOST: "synthetic-tv",
+            CONF_TV_USERNAME: "synthetic-user",
+            CONF_TV_PASSWORD: "synthetic-password",
+            CONF_HUE_HOST: "synthetic-bridge",
+            CONF_HUE_APP_KEY: "synthetic-app-key",
+            CONF_HUE_CLIENT_KEY: "synthetic-client-key",
+            CONF_HUE_AREA_ID: "synthetic-area",
+            CONF_HUE_AREA_CHANNELS: [
+                {"channel_id": 0, "position": [-0.8, 0.4, 0.0], "tv_mapping": "left_top"}
+            ],
+        }
+    )
+
+    with (
+        patch(
+            "custom_components.hue_entertainment.PhilipsJointSpaceSource",
+            FakeJointSpaceSource,
+        ),
+        patch("custom_components.hue_entertainment.HueEntertainmentBackend", FakeHueBackend),
+    ):
+        await _setup(hass, entry)
+        light_entity = er.async_get(hass).async_get_entity_id(
+            "light", DOMAIN, f"{entry.entry_id}_ambilight_hue_sync"
+        )
+        await hass.services.async_call(
+            "light",
+            "turn_on",
+            {"entity_id": light_entity, "brightness": 96},
+            blocking=True,
+        )
+        assert await hass.config_entries.async_unload(entry.entry_id)
+
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+        assert hass.states.get(light_entity).state == "on"
+        assert hass.states.get(light_entity).attributes["brightness"] == 96
+
+        frame = [ChannelColor(1, 1000, 2000, 3000)]
+        sources[-1].frame_callback(frame)
+        await hass.async_block_till_done()
+        assert backends[-1].started
+
+        sources[-1].frame_callback(frame)
+        await hass.async_block_till_done()
+        assert backends[-1].frames
         assert await hass.config_entries.async_unload(entry.entry_id)
 
 
@@ -1185,11 +1387,14 @@ async def test_status_sensor_is_named_and_idle_by_default(hass: HomeAssistant) -
     assert state.state == "idle"
     assert state.attributes["device_class"] == "enum"
     assert set(state.attributes["options"]) == {
+        "disabled",
         "idle",
+        "connecting",
         "streaming",
         "classic",
         "paused",
         "releasing",
+        "error",
     }
     assert await hass.config_entries.async_unload(entry.entry_id)
 

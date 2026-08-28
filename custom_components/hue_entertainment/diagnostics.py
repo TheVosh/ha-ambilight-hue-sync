@@ -80,6 +80,7 @@ async def async_get_config_entry_diagnostics(
             ],
         },
         "engine": data.engine.stats,
+        "sync_control": data.control.stats,
         "output_backend": getattr(data.backend, "stats", {"type": type(data.backend).__name__}),
         "dtls": {"frames_coalesced_in_mailbox": data.mailbox.coalesced},
         "jointspace": data.jointspace_source.stats if data.jointspace_source else None,
