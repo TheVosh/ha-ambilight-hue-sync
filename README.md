@@ -1,194 +1,247 @@
-# Hue Entertainment Bridge
+# Ambilight Hue Sync for Home Assistant
 
-[![Tests](https://github.com/83noit/ha-hue-entertainment/actions/workflows/tests.yaml/badge.svg)](https://github.com/83noit/ha-hue-entertainment/actions/workflows/tests.yaml)
-[![HACS](https://github.com/83noit/ha-hue-entertainment/actions/workflows/hacs.yaml/badge.svg)](https://github.com/83noit/ha-hue-entertainment/actions/workflows/hacs.yaml)
-[![Hassfest](https://github.com/83noit/ha-hue-entertainment/actions/workflows/hassfest.yaml/badge.svg)](https://github.com/83noit/ha-hue-entertainment/actions/workflows/hassfest.yaml)
-[![Release](https://img.shields.io/github/v/release/83noit/ha-hue-entertainment?sort=semver)](https://github.com/83noit/ha-hue-entertainment/releases)
-[![HACS Default](https://img.shields.io/badge/HACS-Default-41BDF5.svg)](https://github.com/hacs/default)
+[![Tests](https://github.com/TheVosh/ha-ambilight-hue-sync/actions/workflows/tests.yaml/badge.svg)](https://github.com/TheVosh/ha-ambilight-hue-sync/actions/workflows/tests.yaml)
+[![HACS](https://github.com/TheVosh/ha-ambilight-hue-sync/actions/workflows/hacs.yaml/badge.svg)](https://github.com/TheVosh/ha-ambilight-hue-sync/actions/workflows/hacs.yaml)
+[![Hassfest](https://github.com/TheVosh/ha-ambilight-hue-sync/actions/workflows/hassfest.yaml/badge.svg)](https://github.com/TheVosh/ha-ambilight-hue-sync/actions/workflows/hassfest.yaml)
+[![Release](https://img.shields.io/github/v/release/TheVosh/ha-ambilight-hue-sync?sort=semver)](https://github.com/TheVosh/ha-ambilight-hue-sync/releases)
 
-A Home Assistant integration that emulates a Philips Hue Bridge's **entertainment mode** for an Ambilight TV. It can either drive Home Assistant lights (including [ZHA](https://www.home-assistant.io/integrations/zha/)) or forward the stream directly to a real Philips Hue Bridge.
+Synchronize a Philips TV's Ambilight with a physical Philips Hue Entertainment Area through
+Home Assistant.
 
-Your TV thinks it's talking to a real Hue Bridge. Your Zigbee bulbs change colour in sync with what's on screen.
-
-## How it works
-
-```mermaid
-flowchart TD
-    TV["📺 Ambilight TV"]
-
-    subgraph HA["Home Assistant"]
-        subgraph Integration["Hue Entertainment Bridge"]
-            API["Hue API\n:80 HTTP — standalone,\nor on HA's own server"]
-            DTLS["DTLS Server\n:2100 UDP"]
-            Engine["Entertainment Engine\nframe parser · throttle · coalesce"]
-        end
-        ZHA["ZHA"]
-    end
-
-    Lights["💡 Zigbee lights"]
-
-    TV -->|"mDNS discovery + pairing"| API
-    TV -->|"HueStream frames @ 25 fps"| DTLS
-    DTLS --> Engine
-    Engine -->|"light.turn_on · adaptive rate"| ZHA
-    ZHA -->|Zigbee| Lights
+```text
+Philips Ambilight TV
+        ↓ JointSpace API
+Home Assistant
+        ↓ native Hue Entertainment streaming
+Physical Philips Hue Bridge
+        ↓
+Hue Entertainment Area
 ```
 
-The integration:
+This is the primary supported architecture. Some newer Philips TVs no longer expose the
+traditional **Ambilight+Hue** pairing workflow, even though their JointSpace API still provides
+live Ambilight measurements. Ambilight Hue Sync restores that capability through Home Assistant.
 
-1. Advertises a Hue Bridge via mDNS (`_hue._tcp.local`)
-2. Serves the Hue v1 REST API for pairing and configuration — on its own port-80 server, or
-   through Home Assistant's web server when HA itself listens on port 80 (HA 2026.8+)
-3. Accepts DTLS-PSK connections for real-time colour streaming
-4. Parses HueStream frames (v1 XY and RGB, v2 RGB)
-5. Dispatches colour updates to HA lights via an adaptive drain loop that matches Zigbee throughput
-6. Also follows the TV's "classic" per-light commands (no streaming), at the same Zigbee-safe pace
+The inherited Hue-bridge emulation and Home Assistant light output remain available for compatible
+setups, but they are secondary to the JointSpace → physical Hue Bridge path.
 
-## Features
+## Highlights
 
-### Output modes
+- Reads live Ambilight colors from `/ambilight/measured` with authenticated JointSpace requests.
+- Discovers the TV's actual edge layout from `/ambilight/topology`.
+- Streams natively to a selected physical Hue Entertainment Area.
+- Maps every Hue channel automatically or to an explicit TV-relative position.
+- Provides a compact **Ambilight Hue Sync** light entity for power and intensity.
+- Works with Home Assistant's HomeKit Bridge as one power-and-brightness accessory.
+- Handles inactivity, reconnects, unload/reload, Hue authorization, and deferred output setup.
+- Exposes redacted diagnostics and HA-native connection/status entities.
+- Preserves inherited HueStream, virtual bridge, HA-light, pause, release, and watchdog support.
 
-**Mode A — Home Assistant / ZHA lights** keeps the original behaviour: the TV sends
-HueStream to this virtual bridge and its adaptive, coalescing drain loop updates the
-selected HA light entities. It is the default for existing configuration entries.
-
-**Mode B — Philips Hue Bridge** is recommended when the lights belong to a physical
-Hue Bridge. The setup flow pairs with that bridge, lists its Entertainment Areas, and
-exposes the selected area's exact channels and 3-D positions to the TV. Incoming
-virtual channels are mapped one-to-one to the selected area's native channel IDs and
-sent over the Hue Entertainment DTLS stream. This avoids high-frequency
-`light.turn_on` calls entirely and supports native streaming rates (up to the chosen
-cap, 50 fps by default).
+## Architecture
 
 ```mermaid
 flowchart LR
-  TV[Ambilight TV] -->|mDNS + Hue v1| Virtual[HA virtual Hue Bridge]
-  TV -->|HueStream / DTLS UDP 2100| Virtual
-  Virtual -->|Mode A: coalesced HA services| HA[HA / ZHA lights]
-  Virtual -->|Mode B: native Hue Entertainment DTLS| Hue[Physical Hue Bridge]
-  Hue --> Area[Selected Entertainment Area]
+    subgraph Inputs[Input backends]
+        JS[Philips JointSpace\nprimary]
+        HS[HueStream / virtual Hue Bridge\ninherited]
+    end
+
+    Control[Ambilight Hue Sync\nruntime control and mapping]
+
+    subgraph Outputs[Output backends]
+        Hue[Physical Hue Bridge\nEntertainment Area · primary]
+        HALights[Home Assistant-managed lights\ninherited]
+    end
+
+    JS --> Control
+    HS --> Control
+    Control --> Hue
+    Control --> HALights
 ```
 
-**Mode C — Philips JointSpace** supports newer TVs, including the Philips OLED909,
-which no longer provide the legacy Ambilight+Hue pairing screen. Select *Philips
-JointSpace Ambilight API*, provide the TV's Digest-auth HTTPS credentials, then select
-the physical Hue Entertainment Area. The integration polls
-`/6/ambilight/measured` (not `/processed`, which can be all-zero on newer TVs), derives
-the TV-edge layout from `/6/ambilight/topology`, and maps each Hue channel to its nearest
-measured zone. JointSpace is HTTP polling, so its default is a conservative 10 Hz.
+### Input backends
 
-- **Zero-config pairing** — config flow walks you through light selection and TV pairing
-- **Adaptive rate control** — round-robin drain loop with per-light coalescing ensures the Zigbee radio is never overloaded
-- **Dynamic transitions** — fade duration automatically matches the update interval for smooth colour changes
-- **State snapshot/restore** — lights return to their previous state when entertainment mode ends
-- **Watchdog** — auto-stops if the TV disconnects or stops sending frames
-- **Classic mode fallback** — if the TV drives lights over plain REST instead of streaming, they still follow
-- **No port juggling on HA 2026.8+** — when Home Assistant listens on port 80 the Hue API rides on HA's own web server
-- **Resilient** — options apply without a restart, unavailable lights are skipped, bind failures are reported cleanly
-- **Diagnostics** — downloadable diagnostics (credentials redacted) and a bridge device grouping the entities
-- **Pause / release** — services your automations call to coordinate Zigbee airtime, or a lighting sweep, with the bridge
+- **Philips JointSpace** — primary input for newer Philips Ambilight TVs. It polls measured
+  Ambilight values over the local HTTPS API with scoped Digest authentication.
+- **HueStream / bridge emulation** — inherited input for TVs that still support the traditional
+  Ambilight+Hue bridge-pairing workflow.
 
-## Pause, resume, release
+### Output backends
 
-Three services let your own automations coordinate with the bridge instead of fighting it
-for the Zigbee radio:
+- **Physical Philips Hue Bridge** — primary output. Frames are sent to the selected Entertainment
+  Area using native Hue Entertainment credentials and DTLS streaming.
+- **Home Assistant-managed lights** — inherited output for HA/ZHA light entities, using a
+  coalescing drain loop appropriate for Zigbee throughput.
 
-- **`hue_entertainment.pause`** — a courtesy gap: drop the bridge's effect on its lights for a few
-  seconds (max 30), then carry on. The session is untouched.
-- **`hue_entertainment.resume`** — end a pause early.
-- **`hue_entertainment.release`** — an intent change, e.g. a bedtime sweep that wants the lights
-  off and *staying* off: forgets the pre-session state so nothing relights the room, asks the TV
-  to stop, and forces a clean teardown if it doesn't within the grace period.
+## Home Assistant controls
 
-```yaml
-- action: hue_entertainment.release
-  data:
-    seconds: 3
-- action: light.turn_off
-  target:
-    area_id: living_room
-```
+The integration creates a compact control surface automatically:
 
-Two entities under the bridge device show what's going on: **Ambilight active** (is the bridge
-driving the lights right now) and a diagnostic **Status** sensor (`idle` / `streaming` /
-`classic` / `paused` / `releasing`). Full contract, examples and edge cases:
-[docs/pause-release.md](docs/pause-release.md).
+- **Ambilight Hue Sync** (`light.ambilight_hue_sync`) — power enables or disables actual
+  synchronization; brightness controls global sync intensity.
+- **Connected** (`binary_sensor.hue_entertainment_bridge_connected`) — whether the configured
+  output session is established.
+- **Status** (`sensor.hue_entertainment_bridge_status`) — reports `disabled`, `idle`,
+  `connecting`, `streaming`, `classic`, `paused`, `releasing`, or `error`.
+
+Turning the light entity off stops the active output session and prevents JointSpace frames from
+starting it again. Turning it on lets the next valid frame resume normal automatic operation.
+Power and intensity survive Home Assistant restarts and integration reloads.
+
+For Apple Home, expose only **Ambilight Hue Sync** through Home Assistant's HomeKit Bridge to get
+one accessory with Power and Brightness. No HomeKit-specific helper entities are required.
 
 ## Requirements
 
-- Home Assistant 2024.11+
-- [ZHA](https://www.home-assistant.io/integrations/zha/) with colour-capable Zigbee lights
-- A Philips TV with Ambilight (or any device that speaks the Hue Entertainment API)
-- Port 80 (TCP) and port 2100 (UDP) reachable on the HA host from the TV — the TV hardcodes both
+For the primary JointSpace → physical Hue Bridge path:
+
+- Home Assistant 2024.11 or newer
+- A Philips Ambilight TV with a reachable JointSpace API
+- JointSpace API credentials, version, port, and appropriate TLS verification setting
+- A physical Philips Hue Bridge with an Entertainment Area created in the Hue app
+- Local network reachability from Home Assistant to both devices
+
+The virtual bridge path additionally requires the TV to reach Home Assistant on TCP port 80 and
+UDP port 2100. See [Port conflicts](docs/port-conflicts.md).
 
 ## Installation
 
-### HACS (recommended)
+### HACS custom repository
 
-1. Open HACS and go to **Integrations**
-2. Search for **Hue Entertainment Bridge** and install
-3. Restart Home Assistant
+Until this independent project is listed in HACS defaults:
 
-### Manual
+1. Open HACS and select **Integrations**.
+2. Open the three-dot menu and select **Custom repositories**.
+3. Add `https://github.com/TheVosh/ha-ambilight-hue-sync` as an **Integration** repository.
+4. Install **Ambilight Hue Sync for Home Assistant**.
+5. Restart Home Assistant.
 
-1. Copy `custom_components/hue_entertainment/` into your HA config directory
-2. Restart Home Assistant
+### Manual installation
 
-## Setup
+1. Copy `custom_components/hue_entertainment/` into your Home Assistant configuration directory.
+2. Restart Home Assistant.
+3. Add **Ambilight Hue Sync** from **Settings → Devices & services**.
 
-1. Go to **Settings > Devices & Services > Add Integration**
-2. Search for **Hue Entertainment Bridge**
-3. Choose **Home Assistant / ZHA lights** and select light entities, or choose
-   **Philips Hue Bridge**, enter its local address, press its link button, and select
-   an Entertainment Area
-4. The TV pairing wizard starts a 60-second window — trigger a Hue bridge search on your TV
-5. Once paired, the integration is ready
+The internal directory remains `hue_entertainment` intentionally for compatibility.
 
-### Modern Philips TVs: JointSpace and native Hue Entertainment
+## Primary setup: JointSpace to physical Hue
 
-Some newer Philips TVs no longer offer the old **Ambilight+Hue** pairing UI. Choose
-**Philips JointSpace Ambilight API** as the input and **Philips Hue Bridge** as the
-output instead. The integration reads `/ambilight/measured`, maps the TV edge zones,
-and sends native DTLS Hue Entertainment frames to a physical Entertainment Area.
+1. Create an Entertainment Area in the Philips Hue app.
+2. In Home Assistant, add **Ambilight Hue Sync**.
+3. Select **Philips JointSpace Ambilight API** as the TV input.
+4. Enter the TV address, JointSpace credentials, API version, port, and TLS preference.
+5. Select an existing Home Assistant Hue Bridge or enter its address manually.
+6. Press the physical Hue Bridge link button and authorize once.
+7. Select the Entertainment Area and review its per-channel Ambilight mapping.
 
-Requirements are mode-specific: JointSpace needs a reachable TV with JointSpace API
-support, its API version and credentials. Many TVs use HTTPS/Digest authentication;
-disable certificate verification only when the TV uses a self-signed certificate that
-Home Assistant cannot verify. JointSpace mode does not need the virtual Hue HTTP or
-DTLS ports.
+Setup validates the TV topology and the returned Hue Entertainment credentials before marking the
+output configured. Hue authorization may also be deferred and completed later from **Configure**
+without re-entering the TV credentials.
 
-Create the Entertainment Area in the Hue app first. Setup validates the TV, selects
-the Hue Bridge (using official Home Assistant Hue metadata when available), performs a
-one-time physical link-button authorization, selects the Area, maps its channels, and
-saves. This authorization creates separate Entertainment credentials and a client key;
-they are never shown in the UI. Hue authorization can be deferred and completed later.
+### Channel mapping
 
-Channel mappings are `auto`, `top`, `bottom`, `left_top`, `left_middle`,
-`left_bottom`, `right_top`, `right_middle`, or `right_bottom`. Auto uses Hue channel
-positions; a manual choice overrides it. Mappings can be changed later without
-re-pairing.
+Available mappings are:
 
-## Configuration
+- `auto`
+- `top`, `bottom`
+- `left_top`, `left_middle`, `left_bottom`
+- `right_top`, `right_middle`, `right_bottom`
 
-Open **Configure** on the integration card to:
+`auto` uses the Hue Entertainment Area coordinates. A manual mapping overrides the automatic
+choice. `top` and `bottom` average all available zones on that edge; side segments resolve against
+the configured edge orientation/reversal.
 
-- **Change lights** — update which entities are in the entertainment area
-- **Pair TV** — open a new 60-second pairing window
-- **Bind IP address** — bind the bridge to a specific IP address (see [Port conflicts](#port-conflicts) below)
-- **Hue API server** — *Automatic* (default), *Standalone server on port 80*, or *Home Assistant's
-  web server*; see [Port conflicts](#port-conflicts) for when each applies
+## Configuration and diagnostics
 
-Changes apply immediately — no restart needed. **Download diagnostics** on the same card gives a
-redacted snapshot (paired clients, engine counters, options) to attach to bug reports.
+Open **Configure** on the integration card to manage sections independently:
 
-For JointSpace with a physical Hue Bridge, **Configure** is a management menu for
-**TV / JointSpace**, **Philips Hue Bridge**, **Entertainment Area**, **Ambilight
-mapping**, **Performance**, and **Re-authorize Hue Bridge**. Opening Configure never
-re-pairs the bridge; reauthorization is explicit.
+- TV / JointSpace connection
+- Philips Hue Bridge and explicit reauthorization
+- Entertainment Area
+- Ambilight channel mapping and edge reversal
+- Performance, brightness, saturation, and inactivity settings
+- Inherited virtual-bridge and Home Assistant-light options where applicable
+
+Changing one section preserves unrelated TV and Hue credentials. Opening Configure never starts
+Hue pairing automatically.
+
+Download diagnostics from the integration card for sanitized runtime state. TV passwords, Hue
+application keys, Hue client keys, tokens, PSKs, and authorization data are recursively redacted.
+
+## Pause, resume, and release
+
+The inherited services remain stable for existing automations:
+
+- `hue_entertainment.pause`
+- `hue_entertainment.resume`
+- `hue_entertainment.release`
+
+Their names and semantics are unchanged. See [Pause and release](docs/pause-release.md) for the
+complete contract and examples.
+
+## Existing installation compatibility
+
+This project has a new repository and product name, but deliberately retains the existing Home
+Assistant integration identity:
+
+- Domain and directory: `hue_entertainment`
+- Existing config entries and options
+- Hue Bridge authorization and Entertainment credentials
+- JointSpace credentials and mappings
+- Entity and device registry associations
+- Existing entity unique IDs
+- Service names
+- Persistent user/configuration storage
+
+### Upgrade path
+
+Existing users should only need to:
+
+1. Update the existing custom integration through HACS or replace its files manually.
+2. Restart Home Assistant or reload the integration.
+
+No delete/reinstall, TV credential entry, Hue re-pairing, or config recreation is required.
+
+GitHub redirects the previous repository URL to the renamed repository, including normal Git
+clone/fetch/push traffic. Existing HACS custom-repository installations should therefore continue
+to update. For clarity, new installations should use the new URL. If a HACS installation keeps a
+cached old location, update its custom repository entry to the new URL; do not delete the Home
+Assistant integration or its config entry.
+
+Do not create a new repository at the old GitHub name later, because that would replace GitHub's
+redirect.
+
+## Inherited functionality and attribution
+
+Ambilight Hue Sync is based on the MIT-licensed
+[`83noit/ha-hue-entertainment`](https://github.com/83noit/ha-hue-entertainment) project. The
+original project focuses on emulating a Hue Bridge so an Ambilight TV can drive Home
+Assistant-managed Zigbee lights.
+
+This codebase evolved into a separate project because its primary architecture is now JointSpace
+input routed to a physical Hue Bridge Entertainment Area. The original virtual-bridge functionality
+is retained for compatibility and remains useful as a secondary mode.
+
+This independent project is not affiliated with, endorsed by, or an official product of Philips,
+Signify, Home Assistant, or the original project maintainer. Philips, Hue, Ambilight, HomeKit, and
+other trademarks belong to their respective owners.
+
+## Project priorities
+
+1. JointSpace → physical Hue Bridge stability
+2. Home Assistant control entities
+3. HomeKit-friendly controls
+4. Robust reconnect and lifecycle behavior
+5. Entertainment Area and channel mapping
+6. Diagnostics and observability
+7. Configuration UX
+8. Optional support for inherited backends
+
+Upstream merge compatibility is no longer a project priority.
 
 ## Troubleshooting
 
-Enable sanitized debug logs when investigating a problem:
+Enable sanitized debug logging:
 
 ```yaml
 logger:
@@ -198,69 +251,14 @@ logger:
     custom_components.hue_entertainment.jointspace: debug
 ```
 
-For JointSpace failures, check TV credentials, network reachability, API version, TLS
-verification, and topology support. For Hue failures, press the physical link button,
-verify that an Entertainment Area exists, and retry authorization. Never include TV
-credentials, Hue application keys, or client keys in bug reports.
+For JointSpace failures, verify TV credentials, API version, port, TLS behavior, and topology
+support. For Hue failures, verify bridge reachability, press the link button only when explicitly
+reauthorizing, and confirm that an Entertainment Area exists.
 
-## Port conflicts
-
-The TV hardcodes port 80 (HTTP) and 2100 (DTLS). On **HA 2026.8+ with the frontend on port 80**
-the Hue API is served through Home Assistant's own web server and there is no conflict — nothing
-to configure. Otherwise the integration runs its own server on port 80; if something else
-(Traefik, Nginx, Pi-hole) already owns it, bind the bridge to a secondary IP address or redirect
-the TV's traffic with iptables. Both are walked through in
-[docs/port-conflicts.md](docs/port-conflicts.md).
-
-## Network requirements
-
-- The TV must reach the HA host on **port 80 (TCP)** and **port 2100 (UDP)**
-- If the TV and HA are on different VLANs, **mDNS relay** must be enabled (e.g. Avahi, Unifi mDNS, or a multicast relay) — without it, the TV cannot discover the bridge
-- The TV ignores the port advertised by mDNS and always connects to port 80; only the IP address from mDNS is used
-
-## How the adaptive drain loop works
-
-Zigbee radios handle one command per light at a time (~150–200 ms round-trip). At 25 fps input with 4 lights, naive dispatch creates a backlog that grows without bound.
-
-Instead, each incoming frame writes its colour into a per-light slot (newest wins, older frames discarded). A background loop round-robins through the lights, sending one `light.turn_on` call at a time. The transition duration is set dynamically to match the measured inter-update interval, so lights fade smoothly rather than stepping.
-
-With 4 lights on a typical Zigbee coordinator, expect ~5–6 commands/second (~1.5 updates/light/second) with continuous smooth fading.
-
-## Tested with
-
-- Philips 55OLED806/12 (Ambilight, v1 XY frames at 25 fps)
-- Home Assistant OS 2026.8 with the frontend on port 80 (Hue API on HA's server) and on 8123 (standalone)
-- SLZB-06Mg24 Zigbee coordinator (TCP, via ZHA)
-- Various Zigbee colour bulbs
-
-## Troubleshooting
-
-**TV doesn't find the bridge**
-- If the integration card says *Failed to set up* / *Retrying*, port 80 is taken on the HA host —
-  see [Port conflicts](#port-conflicts). `curl http://<HA_IP>/api/nouser/config` must return the bridge JSON.
-- Verify mDNS works across VLANs if the TV is on a separate network segment
-- Check HA logs for mDNS registration errors
-
-**TV says the bulbs are connected but they barely follow, or lag a lot**
-- The TV has fallen into "classic" mode (per-light REST commands, ~4 updates/s shared by all bulbs,
-  no DTLS stream). This happens when the bridge disappears while the TV is on — e.g. an HA restart.
-  Toggling Ambilight+hue does not fix it; **restart the TV** and it will stream again (allow 2–3
-  minutes for it to rediscover the bridge).
-
-**Lights don't change colour**
-- Confirm the selected lights are ZHA colour-capable entities (`color_mode: xy` or `hs`)
-- Check port 2100 (UDP) is reachable from the TV: `nc -u <HA_IP> 2100`
-- Enable debug logging:
-  ```yaml
-  logger:
-    logs:
-      custom_components.hue_entertainment: debug
-  ```
-
-**Colours are behind / out of sync**
-- This is normal for Zigbee — the adaptive drain loop minimises lag but Zigbee throughput is the hard limit (~1.5 updates/light/second with 4 lights)
-- Reducing the number of lights in the entertainment area increases the per-light update rate
+Never include TV credentials, Hue application keys, client keys, or unredacted diagnostics in an
+issue. Report problems at
+[`TheVosh/ha-ambilight-hue-sync`](https://github.com/TheVosh/ha-ambilight-hue-sync/issues).
 
 ## License
 
-MIT
+MIT. See [LICENSE](LICENSE). The original copyright and license notice remain preserved.

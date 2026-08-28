@@ -101,7 +101,7 @@
       "waiting_for_tv": "Waiting for your TV to pair…"
     },
     "abort": {
-      "already_configured": "Hue Entertainment Bridge is already configured.",
+      "already_configured": "Ambilight Hue Sync is already configured.",
       "port_in_use": "Port 80 is already in use on the Home Assistant host, so the bridge cannot start. See the README for port-conflict options, then try again."
     },
     "error": {
@@ -126,7 +126,7 @@
   "options": {
     "step": {
       "init": {
-        "title": "Hue Entertainment Bridge",
+        "title": "Ambilight Hue Sync",
         "description": "TV: {tv_host}\nHue Bridge: {hue_status} ({hue_host})\nEntertainment Area: {area}\nChannels: {channels}\n\nChoose what you want to manage. Your saved connections are never changed until you save an edit.",
         "data": {
           "management_action": "What would you like to manage?",
@@ -193,7 +193,7 @@
   },
   "exceptions": {
     "no_bridge_loaded": {
-      "message": "No Hue Entertainment Bridge is loaded."
+      "message": "No Ambilight Hue Sync integration is loaded."
     }
   }
 }
