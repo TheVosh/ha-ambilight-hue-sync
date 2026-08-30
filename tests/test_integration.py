@@ -416,13 +416,14 @@ async def test_enabled_sync_resumes_on_jointspace_frame_after_reload(hass: HomeA
             **_kwargs,
         ) -> None:
             self.frame_callback = frame_callback
+            self.started = False
             sources.append(self)
 
         def set_inactivity_callback(self, _callback, _timeout) -> None:
             pass
 
         async def async_start(self) -> None:
-            pass
+            self.started = True
 
         async def async_close(self) -> None:
             pass
@@ -462,14 +463,22 @@ async def test_enabled_sync_resumes_on_jointspace_frame_after_reload(hass: HomeA
         def stats(self) -> dict:
             return {}
 
-    entry = _entry(
-        **{
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        unique_id=DOMAIN,
+        title="Hue Entertainment",
+        data={
+            CONF_BRIDGE_ID: BRIDGE_ID,
             CONF_INPUT_MODE: INPUT_PHILIPS_JOINTSPACE,
             CONF_OUTPUT_BACKEND: BACKEND_HUE,
-            CONF_OUTPUT_CONFIGURED: True,
+            CONF_OUTPUT_CONFIGURED: False,
             CONF_TV_HOST: "synthetic-tv",
             CONF_TV_USERNAME: "synthetic-user",
             CONF_TV_PASSWORD: "synthetic-password",
+        },
+        options={
+            CONF_OUTPUT_BACKEND: BACKEND_HUE,
+            CONF_OUTPUT_CONFIGURED: True,
             CONF_HUE_HOST: "synthetic-bridge",
             CONF_HUE_APP_KEY: "synthetic-app-key",
             CONF_HUE_CLIENT_KEY: "synthetic-client-key",
@@ -477,7 +486,7 @@ async def test_enabled_sync_resumes_on_jointspace_frame_after_reload(hass: HomeA
             CONF_HUE_AREA_CHANNELS: [
                 {"channel_id": 0, "position": [-0.8, 0.4, 0.0], "tv_mapping": "left_top"}
             ],
-        }
+        },
     )
 
     with (
@@ -488,6 +497,8 @@ async def test_enabled_sync_resumes_on_jointspace_frame_after_reload(hass: HomeA
         patch("custom_components.hue_entertainment.HueEntertainmentBackend", FakeHueBackend),
     ):
         await _setup(hass, entry)
+        assert sources[-1].started
+        assert isinstance(entry.runtime_data.backend, FakeHueBackend)
         light_entity = er.async_get(hass).async_get_entity_id(
             "light", DOMAIN, f"{entry.entry_id}_ambilight_hue_sync"
         )
@@ -501,6 +512,8 @@ async def test_enabled_sync_resumes_on_jointspace_frame_after_reload(hass: HomeA
 
         assert await hass.config_entries.async_setup(entry.entry_id)
         await hass.async_block_till_done()
+        assert sources[-1].started
+        assert isinstance(entry.runtime_data.backend, FakeHueBackend)
         assert hass.states.get(light_entity).state == "on"
         assert hass.states.get(light_entity).attributes["brightness"] == 96
 
