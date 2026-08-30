@@ -1,0 +1,61 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 768 224">
+<title>Ambilight Hue Sync logo</title>
+<g transform="translate(8 8) scale(.8125)"><defs>
+  <linearGradient id="spectrum" x1="0" y1="0" x2="1" y2="0">
+    <stop offset="0" stop-color="#DD1E87"/>
+    <stop offset=".28" stop-color="#FF4E5D"/>
+    <stop offset=".56" stop-color="#FFDC13"/>
+    <stop offset="1" stop-color="#09B1D2"/>
+  </linearGradient>
+  <filter id="ambient" x="-70%" y="-70%" width="240%" height="240%">
+    <feGaussianBlur stdDeviation="13"/>
+    <feComponentTransfer><feFuncA type="linear" slope=".45"/></feComponentTransfer>
+  </filter>
+  <filter id="active" x="-100%" y="-100%" width="300%" height="300%">
+    <feGaussianBlur stdDeviation="7"/>
+    <feComponentTransfer><feFuncA type="linear" slope=".52"/></feComponentTransfer>
+  </filter>
+  <filter id="highlight" x="-200%" y="-200%" width="500%" height="500%">
+    <feGaussianBlur stdDeviation="3"/>
+  </filter>
+</defs>
+<g opacity=".9" filter="url(#ambient)">
+  <ellipse cx="74" cy="132" rx="31" ry="58" fill="#DD1E87"/>
+  <ellipse cx="130" cy="80" rx="58" ry="28" fill="#FFA80D"/>
+  <ellipse cx="184" cy="132" rx="33" ry="59" fill="#09B1D2"/>
+</g>
+<g filter="url(#active)" opacity=".9">
+  <path d="M38 79 Q27 126 37 168" fill="none" stroke="#DD1E87" stroke-width="15" stroke-linecap="round"/>
+  <rect x="91" y="40" width="72" height="17" rx="9" fill="#FFA80D" transform="rotate(-4 127 49)"/>
+  <path d="M211 79 Q221 127 211 171" fill="none" stroke="#09B1D2" stroke-width="15" stroke-linecap="round"/>
+  <rect x="84" y="194" width="88" height="17" rx="9" fill="url(#spectrum)" transform="rotate(4 128 203)"/>
+</g>
+<g transform="rotate(-4 128 124)">
+  <rect x="54" y="72" width="148" height="104" rx="25" fill="url(#spectrum)"/>
+  <rect x="57" y="75" width="142" height="98" rx="22" fill="#05111E"/>
+</g>
+<path d="M38 79 Q27 126 37 168" fill="none" stroke="#DD1E87" stroke-width="15" stroke-linecap="round"/>
+<g transform="rotate(-4 127 49)">
+  <rect x="91" y="40" width="72" height="17" rx="9" fill="#FFA80D"/>
+  <circle cx="100" cy="48" r="5" fill="#FFCF5B" opacity=".8" filter="url(#highlight)"/>
+<circle cx="100" cy="48" r="2" fill="#FFCF5B"/>
+  <circle cx="153" cy="49" r="5" fill="#FFCF5B" opacity=".8" filter="url(#highlight)"/>
+<circle cx="153" cy="49" r="2" fill="#FFCF5B"/>
+</g>
+<path d="M211 79 Q221 127 211 171" fill="none" stroke="#09B1D2" stroke-width="15" stroke-linecap="round"/>
+<circle cx="38" cy="87" r="5" fill="#FF67C2" opacity=".8" filter="url(#highlight)"/>
+<circle cx="38" cy="87" r="2" fill="#FF67C2"/>
+<circle cx="211" cy="162" r="5" fill="#64E7F2" opacity=".8" filter="url(#highlight)"/>
+<circle cx="211" cy="162" r="2" fill="#64E7F2"/>
+<g transform="rotate(4 128 203)">
+  <rect x="84" y="194" width="88" height="17" rx="9" fill="url(#spectrum)"/>
+  <circle cx="95" cy="202" r="5" fill="#FF67C2" opacity=".8" filter="url(#highlight)"/>
+<circle cx="95" cy="202" r="2" fill="#FF67C2"/>
+  <circle cx="128" cy="203" r="5" fill="#FFCF5B" opacity=".8" filter="url(#highlight)"/>
+<circle cx="128" cy="203" r="2" fill="#FFCF5B"/>
+  <circle cx="162" cy="203" r="5" fill="#64E7F2" opacity=".8" filter="url(#highlight)"/>
+<circle cx="162" cy="203" r="2" fill="#64E7F2"/>
+</g></g>
+<text x="230" y="104" fill="#182235" font-family="Arial, DejaVu Sans, sans-serif" font-size="62" font-weight="700">Ambilight</text>
+<text x="230" y="166" fill="#46566F" font-family="Arial, DejaVu Sans, sans-serif" font-size="52">Hue Sync</text>
+</svg>
