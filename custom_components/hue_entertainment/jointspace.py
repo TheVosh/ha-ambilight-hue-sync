@@ -230,9 +230,28 @@ class PhilipsJointSpaceSource(AmbilightSource):
     async def async_start(self) -> None:
         if self._running:
             return
-        await self._async_topology()
         self._running = True
-        self._task = asyncio.create_task(self._poll_loop())
+        self._task = asyncio.create_task(self._run())
+
+    async def _run(self) -> None:
+        """Initialize topology with backoff, then keep the single polling loop alive."""
+        while self._running:
+            try:
+                await self._async_topology()
+                self._backoff = 0.0
+                await self._poll_loop()
+                return
+            except (aiohttp.ClientError, asyncio.TimeoutError, ValueError):
+                self._failed += 1
+                self._reconnects += 1
+                self._backoff = min(max(self._backoff * 2, 1.0), 30.0)
+                if self._failed == 1 or self._failed % 30 == 0:
+                    _LOGGER.debug("JointSpace topology initialization failed", exc_info=True)
+                await asyncio.sleep(self._backoff)
+            except Exception:
+                self._running = False
+                _LOGGER.exception("JointSpace topology initialization stopped unexpectedly")
+                return
 
     async def async_stop(self) -> None:
         self._running = False

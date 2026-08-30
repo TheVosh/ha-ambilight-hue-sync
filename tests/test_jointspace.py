@@ -1,6 +1,11 @@
 """Tests for Philips JointSpace Ambilight normalization and mapping."""
 
+import asyncio
+
+import pytest
+
 from custom_components.hue_entertainment.jointspace import (
+    PhilipsJointSpaceSource,
     map_points_to_channels,
     measured_points,
     parse_topology,
@@ -41,3 +46,39 @@ def test_invalid_or_missing_measured_layer_is_ignored() -> None:
     topology = parse_topology({"left": 1})
     assert measured_points({}, topology) == []
     assert measured_points({"layer1": {"left": {"0": {"r": "bad"}}}}, topology) == []
+
+
+@pytest.mark.asyncio
+async def test_initial_topology_failure_retries_before_starting_poll_loop(monkeypatch) -> None:
+    """A transient startup request must not leave JointSpace permanently idle."""
+    source = PhilipsJointSpaceSource(
+        None,
+        "synthetic-tv",
+        "synthetic-user",
+        "synthetic-password",
+        {1: (0.0, 0.0, 0.0)},
+        lambda _colors: None,
+    )
+    attempts = 0
+    polling = asyncio.Event()
+
+    async def async_topology() -> None:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise asyncio.TimeoutError
+
+    async def poll_loop() -> None:
+        polling.set()
+        await asyncio.Future()
+
+    monkeypatch.setattr(source, "_async_topology", async_topology)
+    monkeypatch.setattr(source, "_poll_loop", poll_loop)
+
+    await source.async_start()
+    await asyncio.wait_for(polling.wait(), timeout=2)
+
+    assert attempts == 2
+    assert source.stats["failed_requests"] == 1
+    assert source.stats["reconnects"] == 1
+    await source.async_close()
