@@ -1,6 +1,7 @@
 """Shared test fixtures."""
 
 import sys
+import types
 from pathlib import Path
 
 # Repo root on the path so `custom_components.hue_entertainment` imports under a
@@ -9,6 +10,17 @@ from pathlib import Path
 _ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(_ROOT))
 sys.path.insert(0, str(_ROOT / "custom_components"))
+
+# Runtime Home Assistant installs the external ``hue-entertainment`` requirement
+# before importing the integration. The test environment deliberately omits that
+# network dependency and also loads local protocol modules under the same top-level
+# package name, so expose only the two import-time symbols backend tests replace.
+_hue_package = types.ModuleType("hue_entertainment")
+_hue_package.__path__ = [str(_ROOT / "custom_components" / "hue_entertainment")]
+_hue_package.__package__ = "hue_entertainment"
+_hue_package.EntertainmentSession = object
+_hue_package.LightColorCommand = object
+sys.modules.setdefault("hue_entertainment", _hue_package)
 
 
 def free_udp_port() -> int:
