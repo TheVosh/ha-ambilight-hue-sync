@@ -2,12 +2,17 @@
 
 from __future__ import annotations
 
+import importlib
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 import pytest
 
-from custom_components.hue_entertainment.backends import EntertainmentOutputBackend
+from custom_components.hue_entertainment import backends as backends_module
+from custom_components.hue_entertainment.backends import (
+    EntertainmentOutputBackend,
+    HueEntertainmentBackend,
+)
 from custom_components.hue_entertainment.const import COLOR_SPACE_RGB, COLOR_SPACE_XY
 from custom_components.hue_entertainment.control import SyncController
 from custom_components.hue_entertainment.entertainment import ChannelColor
@@ -104,3 +109,72 @@ async def test_intensity_boundaries_and_power_gate_actual_output() -> None:
     backend.started = False
     assert await control.async_start()
     assert backend.start_count == 3
+
+
+@pytest.mark.asyncio
+async def test_physical_hue_runtime_start_and_recreation_do_not_import_dependency(
+    monkeypatch,
+) -> None:
+    """The installed Hue dependency is resolved before the async runtime path."""
+    sessions = []
+    import_attempts = []
+
+    class FakeSession:
+        def __init__(self, *_args, **_kwargs) -> None:
+            self.is_streaming = False
+            self.closed = False
+            self.fail_send = False
+            sessions.append(self)
+
+        async def start(self, _area_id: str) -> None:
+            self.is_streaming = True
+
+        def send(self, _commands) -> None:
+            if self.fail_send:
+                raise OSError("synthetic disconnect")
+
+        async def stop(self) -> None:
+            self.is_streaming = False
+
+        async def aclose(self) -> None:
+            self.closed = True
+            self.is_streaming = False
+
+    class FakeCommand:
+        def __init__(self, **kwargs) -> None:
+            self.values = kwargs
+
+    def reject_runtime_import(name: str, *_args, **_kwargs):
+        if name == "hue_entertainment":
+            import_attempts.append(name)
+            raise AssertionError("Hue dependency imported from async runtime")
+        return original_import_module(name, *_args, **_kwargs)
+
+    original_import_module = importlib.import_module
+    monkeypatch.setattr(importlib, "import_module", reject_runtime_import)
+    if hasattr(backends_module, "import_module"):
+        monkeypatch.setattr(backends_module, "import_module", reject_runtime_import)
+    monkeypatch.setattr(backends_module, "EntertainmentSession", FakeSession)
+    monkeypatch.setattr(backends_module, "LightColorCommand", FakeCommand)
+
+    backend = HueEntertainmentBackend(
+        "synthetic-bridge",
+        "synthetic-app-key",
+        "synthetic-client-key",
+        "synthetic-area",
+        {1: 0},
+    )
+    await backend.async_start()
+    assert backend.connected
+    assert len(sessions) == 1
+
+    sessions[0].fail_send = True
+    backend.send_frame([ChannelColor(1, 1000, 2000, 3000)], COLOR_SPACE_RGB)
+    assert not backend.connected
+
+    await backend.async_start()
+    assert sessions[0].closed
+    assert len(sessions) == 2
+    assert backend.connected
+    assert import_attempts == []
+    await backend.async_close()

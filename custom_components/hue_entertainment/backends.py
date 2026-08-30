@@ -19,10 +19,13 @@ from .entertainment import ChannelColor, EntertainmentEngine
 
 _LOGGER = logging.getLogger(__name__)
 
-
-def _hue_symbol(name: str) -> Any:
-    """Resolve optional PyPI symbols despite the integration package name collision."""
-    return getattr(import_module("hue_entertainment"), name)
+# Home Assistant installs manifest requirements before loading this module and
+# imports integrations in its import executor. Resolve the external package once
+# here so no import work can occur later in an async session/frame path. getattr
+# avoids the static-name collision with this integration's internal package.
+_HUE_LIBRARY = import_module("hue_entertainment")
+EntertainmentSession = getattr(_HUE_LIBRARY, "EntertainmentSession")
+LightColorCommand = getattr(_HUE_LIBRARY, "LightColorCommand")
 
 
 class EntertainmentOutputBackend(ABC):
@@ -157,10 +160,6 @@ class HueEntertainmentBackend(EntertainmentOutputBackend):
         async with self._start_lock:
             if self.connected:
                 return
-            # Imported here so HA can install the manifest requirement before
-            # importing the integration and unit tests can exercise old code alone.
-            EntertainmentSession = _hue_symbol("EntertainmentSession")
-
             if self._restart_required and self._session is not None:
                 await self._session.aclose()
                 self._session = None
@@ -185,8 +184,6 @@ class HueEntertainmentBackend(EntertainmentOutputBackend):
         if now - self._last_send < 1 / self._fps_cap:
             return
         self._last_send = now
-        LightColorCommand = _hue_symbol("LightColorCommand")
-
         commands = []
         for channel in channels:
             physical_channel = self.channel_map.get(channel.channel_id)
