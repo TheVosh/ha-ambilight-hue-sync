@@ -11,7 +11,9 @@ import logging
 import math
 import time
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from collections.abc import Awaitable, Callable, Coroutine
+from dataclasses import dataclass, replace
+from enum import Enum
 from typing import Any
 
 import aiohttp
@@ -20,6 +22,86 @@ from .entertainment import ChannelColor
 
 _LOGGER = logging.getLogger(__name__)
 EDGES = ("left", "top", "right", "bottom")
+
+# A zone whose 8-bit channels are all at or below this level carries no light.
+# A switched-off / standby TV reports such frames, so they never (re)start output.
+DARK_LEVEL = 4
+# Consecutive lit polls required before the output is (re)started. A single
+# stray answer from a TV in network standby must not activate the Hue area.
+ARM_FRAMES = 3
+# While streaming, a fully dark picture is still forwarded (dark scenes), but if
+# nothing lit arrives for this long the TV is treated as off and output released.
+DARK_RELEASE_TIMEOUT = 15.0
+
+
+class Sample(Enum):
+    """Classification of one JointSpace poll."""
+
+    LIT = "lit"  # usable colours with at least one zone carrying light
+    DARK = "dark"  # usable colours, but every zone is black
+    MISSING = "missing"  # failed request, invalid or empty measurement
+
+
+class GateAction(Enum):
+    """What the poll loop must do after a gate transition."""
+
+    NONE = "none"
+    FORWARD = "forward"  # hand the frame to the output (starts it if idle)
+    RELEASE = "release"  # stop the output once; stay idle until re-armed
+
+
+@dataclass(frozen=True)
+class SignalGate:
+    """Immutable output gate state: idle until armed by lit frames, then active."""
+
+    active: bool = False
+    lit_streak: int = 0
+    last_frame: float = 0.0
+    last_lit: float = 0.0
+
+
+def classify_points(points: list[AmbilightPoint]) -> Sample:
+    """Classify parsed measured zones as lit, dark, or missing."""
+    if not points:
+        return Sample.MISSING
+    if any(max(point.rgb) > DARK_LEVEL for point in points):
+        return Sample.LIT
+    return Sample.DARK
+
+
+def advance_gate(
+    gate: SignalGate,
+    sample: Sample,
+    now: float,
+    *,
+    timeout: float,
+    dark_timeout: float = DARK_RELEASE_TIMEOUT,
+    arm_frames: int = ARM_FRAMES,
+) -> tuple[SignalGate, GateAction]:
+    """Pure transition function of the TV-signal output gate.
+
+    Idle: only ``arm_frames`` consecutive lit polls activate output; dark or
+    missing polls reset the streak, so a TV that is off/unreachable never
+    restarts the stream. Active: every usable frame (lit or dark) is forwarded;
+    output is released exactly once when no usable frame arrived for
+    ``timeout`` or no lit frame for ``max(timeout, dark_timeout)``.
+    """
+    if not gate.active:
+        if sample is not Sample.LIT:
+            return (replace(gate, lit_streak=0) if gate.lit_streak else gate), GateAction.NONE
+        streak = gate.lit_streak + 1
+        if streak < max(1, arm_frames):
+            return replace(gate, lit_streak=streak), GateAction.NONE
+        return SignalGate(True, 0, now, now), GateAction.FORWARD
+    if sample is Sample.LIT:
+        return replace(gate, last_frame=now, last_lit=now), GateAction.FORWARD
+    if sample is Sample.DARK:
+        if now - gate.last_lit > max(timeout, dark_timeout):
+            return SignalGate(), GateAction.RELEASE
+        return replace(gate, last_frame=now), GateAction.FORWARD
+    if now - gate.last_frame > timeout:
+        return SignalGate(), GateAction.RELEASE
+    return gate, GateAction.NONE
 
 
 async def async_validate_jointspace(
@@ -177,6 +259,8 @@ class PhilipsJointSpaceSource(AmbilightSource):
         verify_ssl: bool = False,
         reversed_edges: frozenset[str] = frozenset(),
         manual_mappings: dict[int, str] | None = None,
+        clock: Callable[[], float] = time.monotonic,
+        sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     ) -> None:
         # Digest middleware must be attached when a ClientSession is created.
         # Keep this private session scoped to this TV; the HA shared session is
@@ -198,9 +282,11 @@ class PhilipsJointSpaceSource(AmbilightSource):
         self._reversed_edges = reversed_edges
         self._manual_mappings = manual_mappings or {}
         self._mapping_logged = False
-        self._inactivity_callback = None
+        self._inactivity_callback: Callable[[], Coroutine[Any, Any, None]] | None = None
         self._inactivity_timeout = 5.0
-        self._output_active = False
+        self._clock, self._sleep = clock, sleep
+        self._gate = SignalGate()
+        self._callback_tasks: set[asyncio.Task[None]] = set()
         self._topology: dict[str, int] = {}
         self._task: asyncio.Task | None = None
         self._running = False
@@ -247,7 +333,7 @@ class PhilipsJointSpaceSource(AmbilightSource):
                 self._backoff = min(max(self._backoff * 2, 1.0), 30.0)
                 if self._failed == 1 or self._failed % 30 == 0:
                     _LOGGER.debug("JointSpace topology initialization failed", exc_info=True)
-                await asyncio.sleep(self._backoff)
+                await self._sleep(self._backoff)
             except Exception:
                 self._running = False
                 _LOGGER.exception("JointSpace topology initialization stopped unexpectedly")
@@ -269,7 +355,9 @@ class PhilipsJointSpaceSource(AmbilightSource):
             await self._session.close()
             self._session = None
 
-    def set_inactivity_callback(self, callback, timeout: float) -> None:
+    def set_inactivity_callback(
+        self, callback: Callable[[], Coroutine[Any, Any, None]], timeout: float
+    ) -> None:
         """Stop a direct output session when the TV stops yielding valid frames."""
         self._inactivity_callback, self._inactivity_timeout = callback, max(0.1, timeout)
 
@@ -291,56 +379,66 @@ class PhilipsJointSpaceSource(AmbilightSource):
             return data
 
     async def _poll_loop(self) -> None:
-        interval, next_poll = 1 / self._fps, time.monotonic()
+        interval, next_poll = 1 / self._fps, self._clock()
         while self._running:
-            now = time.monotonic()
+            now = self._clock()
             if now < next_poll:
-                await asyncio.sleep(next_poll - now)
-            started = time.monotonic()
+                await self._sleep(next_poll - now)
+            started = self._clock()
             next_poll = started + interval
+            sample, colors, failed = Sample.MISSING, [], False
             try:
                 payload = await self._get("ambilight/measured")
                 points = measured_points(payload, self._topology, self._reversed_edges)
                 colors = map_points_to_channels(
                     points, self._channel_positions, self._manual_mappings
                 )
-                if not colors:
-                    continue
-                if not self._mapping_logged:
-                    for channel_id, position in sorted(self._channel_positions.items()):
-                        mapping = self._manual_mappings.get(channel_id, "auto")
-                        labels = resolved_zone_labels(points, mapping)
-                        _LOGGER.debug(
-                            "Hue channel %d at %s -> %s -> %s",
-                            channel_id,
-                            position,
-                            mapping,
-                            labels or ["auto nearest"],
-                        )
-                    self._mapping_logged = True
-                self._last_frame = time.monotonic()
-                self._frames += 1
-                self._latency_total += self._last_frame - started
+                sample = classify_points(points) if colors else Sample.MISSING
+                if colors and not self._mapping_logged:
+                    self._log_mapping(points)
                 self._backoff = 0.0
-                self._output_active = True
-                self._frame_callback(colors)
             except (aiohttp.ClientError, asyncio.TimeoutError, ValueError):
+                failed = True
                 self._failed += 1
                 self._reconnects += 1
                 self._backoff = min(max(self._backoff * 2, 1.0), 30.0)
                 if self._failed == 1 or self._failed % 30 == 0:
                     _LOGGER.debug("JointSpace Ambilight poll failed", exc_info=True)
-                await asyncio.sleep(self._backoff)
-            if (
-                self._output_active
-                and time.monotonic() - self._last_frame > self._inactivity_timeout
-            ):
-                self._output_active = False
-                if self._inactivity_callback is not None:
-                    asyncio.create_task(self._inactivity_callback())
-            if time.monotonic() > next_poll:
+            self._apply_sample(sample, colors, started)
+            if failed:
+                await self._sleep(self._backoff)
+            if self._clock() > next_poll:
                 self._skipped += 1
-                next_poll = time.monotonic() + interval
+                next_poll = self._clock() + interval
+
+    def _apply_sample(self, sample: Sample, colors: list[ChannelColor], started: float) -> None:
+        """Feed one poll result through the output gate and act on its decision."""
+        now = self._clock()
+        self._gate, action = advance_gate(self._gate, sample, now, timeout=self._inactivity_timeout)
+        if action is GateAction.FORWARD:
+            self._last_frame = now
+            self._frames += 1
+            self._latency_total += now - started
+            self._frame_callback(colors)
+        elif action is GateAction.RELEASE:
+            _LOGGER.debug("Ambilight signal lost (%s); releasing output", sample.value)
+            if self._inactivity_callback is not None:
+                task = asyncio.create_task(self._inactivity_callback())
+                self._callback_tasks.add(task)
+                task.add_done_callback(self._callback_tasks.discard)
+
+    def _log_mapping(self, points: list[AmbilightPoint]) -> None:
+        for channel_id, position in sorted(self._channel_positions.items()):
+            mapping = self._manual_mappings.get(channel_id, "auto")
+            labels = resolved_zone_labels(points, mapping)
+            _LOGGER.debug(
+                "Hue channel %d at %s -> %s -> %s",
+                channel_id,
+                position,
+                mapping,
+                labels or ["auto nearest"],
+            )
+        self._mapping_logged = True
 
 
 def _zone_position(edge: str, index: int, count: int, reverse: bool) -> tuple[float, float, float]:
