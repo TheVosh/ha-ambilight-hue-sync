@@ -20,6 +20,7 @@ CONF_HUE_AREA_NAME = "hue_area_name"
 CONF_STREAM_FPS = "stream_fps"
 CONF_BRIGHTNESS_MULTIPLIER = "brightness_multiplier"
 CONF_SATURATION_MULTIPLIER = "saturation_multiplier"
+CONF_COLOR_SMOOTHING = "color_smoothing"
 CONF_INPUT_MODE = "input_mode"
 CONF_TV_HOST = "tv_host"
 CONF_TV_USERNAME = "tv_username"
@@ -60,6 +61,12 @@ BACKEND_HOME_ASSISTANT = "home_assistant"
 BACKEND_HUE = "hue_bridge"
 DEFAULT_OUTPUT_BACKEND = BACKEND_HOME_ASSISTANT
 DEFAULT_STREAM_FPS = 50
+# Colour transition time constant (ms) for the physical Hue output: each input
+# frame is eased towards over ~3x this time instead of jumping. 0 disables it.
+# 150 ms bridges the ~100 ms JointSpace poll gap into a continuous fade while
+# keeping scene changes responsive.
+DEFAULT_COLOR_SMOOTHING = 150
+MAX_COLOR_SMOOTHING = 2000
 
 # Where the Hue REST API is served from
 HTTP_MODE_AUTO = "auto"  # HA's own server if it listens on :80 without TLS, else standalone

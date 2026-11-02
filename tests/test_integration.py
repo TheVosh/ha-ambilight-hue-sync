@@ -36,6 +36,7 @@ from custom_components.hue_entertainment.const import (  # noqa: E402
     CONF_BIND_IP,
     CONF_BRIDGE_ID,
     CONF_BRIGHTNESS_MULTIPLIER,
+    CONF_COLOR_SMOOTHING,
     CONF_ENTERTAINMENT_PORT,
     CONF_HUE_APP_KEY,
     CONF_HUE_AREA_CHANNELS,
@@ -57,6 +58,7 @@ from custom_components.hue_entertainment.const import (  # noqa: E402
     CONF_TV_PORT,
     CONF_TV_USERNAME,
     CONF_TV_VERIFY_SSL,
+    DEFAULT_COLOR_SMOOTHING,
     DEFAULT_INPUT_MODE,
     DEFAULT_OUTPUT_BACKEND,
     DOMAIN,
@@ -64,6 +66,7 @@ from custom_components.hue_entertainment.const import (  # noqa: E402
     INPUT_PHILIPS_JOINTSPACE,
 )
 from custom_components.hue_entertainment.entertainment import ChannelColor  # noqa: E402
+from custom_components.hue_entertainment.smoothing import SmoothedOutputBackend  # noqa: E402
 
 BRIDGE_ID = "001788FFFE0AB1C2"
 LIGHTS = ["light.a", "light.b"]
@@ -499,6 +502,9 @@ async def test_enabled_sync_resumes_on_jointspace_frame_after_reload(hass: HomeA
         await _setup(hass, entry)
         assert sources[-1].started
         assert isinstance(entry.runtime_data.backend, FakeHueBackend)
+        # Physical Hue output is eased between JointSpace frames by default.
+        assert isinstance(entry.runtime_data.control._backend, SmoothedOutputBackend)
+        assert entry.runtime_data.control._backend.inner is entry.runtime_data.backend
         light_entity = er.async_get(hass).async_get_entity_id(
             "light", DOMAIN, f"{entry.entry_id}_ambilight_hue_sync"
         )
@@ -1185,6 +1191,22 @@ async def test_performance_only_edit_preserves_other_configuration(
     assert effective[CONF_HUE_AREA_ID] == entry.data[CONF_HUE_AREA_ID]
     assert effective[CONF_HUE_AREA_NAME] == entry.data[CONF_HUE_AREA_NAME]
     assert effective[CONF_TV_CHANNEL_MAPPINGS] == entry.data[CONF_TV_CHANNEL_MAPPINGS]
+
+
+async def test_performance_colour_smoothing_defaults_and_can_be_disabled(
+    hass: HomeAssistant,
+) -> None:
+    """The smoothing option defaults to a natural fade and accepts 0 to turn it off."""
+    entry = _configured_jointspace_hue_entry()
+    entry.add_to_hass(hass)
+
+    for submitted, expected in (({}, DEFAULT_COLOR_SMOOTHING), ({CONF_COLOR_SMOOTHING: 0}, 0)):
+        result = await hass.config_entries.options.async_init(entry.entry_id)
+        result = await hass.config_entries.options.async_configure(
+            result["flow_id"], {"management_action": "performance"}
+        )
+        result = await hass.config_entries.options.async_configure(result["flow_id"], submitted)
+        assert result["data"][CONF_COLOR_SMOOTHING] == expected
 
 
 async def test_options_flow_validates_bind_ip(hass: HomeAssistant) -> None:

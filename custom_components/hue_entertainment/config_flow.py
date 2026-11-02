@@ -19,6 +19,9 @@ from homeassistant.helpers.selector import (
     BooleanSelector,
     EntitySelector,
     EntitySelectorConfig,
+    NumberSelector,
+    NumberSelectorConfig,
+    NumberSelectorMode,
     SelectSelector,
     SelectSelectorConfig,
     SelectSelectorMode,
@@ -31,6 +34,7 @@ from .const import (
     CONF_BIND_IP,
     CONF_BRIDGE_ID,
     CONF_BRIGHTNESS_MULTIPLIER,
+    CONF_COLOR_SMOOTHING,
     CONF_HTTP_MODE,
     CONF_HUE_APP_KEY,
     CONF_HUE_AREA_CHANNELS,
@@ -59,6 +63,7 @@ from .const import (
     CONF_TV_USERNAME,
     CONF_TV_VERIFY_SSL,
     DEFAULT_API_PORT,
+    DEFAULT_COLOR_SMOOTHING,
     DEFAULT_HTTP_MODE,
     DEFAULT_INPUT_MODE,
     DEFAULT_OUTPUT_BACKEND,
@@ -71,6 +76,7 @@ from .const import (
     INPUT_LEGACY_HUESTREAM,
     INPUT_PHILIPS_JOINTSPACE,
     LINK_BUTTON_TIMEOUT,
+    MAX_COLOR_SMOOTHING,
     TV_RELATIVE_POSITIONS,
 )
 from .discovery import HueBridgeDiscovery
@@ -973,6 +979,21 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                         CONF_SATURATION_MULTIPLIER,
                         default=self._current(CONF_SATURATION_MULTIPLIER, 1.0),
                     ): vol.Coerce(float),
+                    vol.Optional(
+                        CONF_COLOR_SMOOTHING,
+                        default=self._current(CONF_COLOR_SMOOTHING, DEFAULT_COLOR_SMOOTHING),
+                    ): vol.All(
+                        NumberSelector(
+                            NumberSelectorConfig(
+                                min=0,
+                                max=MAX_COLOR_SMOOTHING,
+                                step=10,
+                                unit_of_measurement="ms",
+                                mode=NumberSelectorMode.BOX,
+                            )
+                        ),
+                        vol.Coerce(int),
+                    ),
                     vol.Optional(
                         CONF_TV_INACTIVITY_TIMEOUT,
                         default=self._current(CONF_TV_INACTIVITY_TIMEOUT, 5.0),
