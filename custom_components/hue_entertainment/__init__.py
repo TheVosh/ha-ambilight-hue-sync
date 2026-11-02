@@ -38,6 +38,7 @@ from .const import (
     CONF_BIND_IP,
     CONF_BRIDGE_ID,
     CONF_BRIGHTNESS_MULTIPLIER,
+    CONF_COLOR_SMOOTHING,
     CONF_ENTERTAINMENT_PORT,
     CONF_HTTP_MODE,
     CONF_HUE_APP_KEY,
@@ -65,6 +66,7 @@ from .const import (
     CONF_TV_USERNAME,
     CONF_TV_VERIFY_SSL,
     DEFAULT_API_PORT,
+    DEFAULT_COLOR_SMOOTHING,
     DEFAULT_ENTERTAINMENT_PORT,
     DEFAULT_HTTP_MODE,
     DEFAULT_INPUT_MODE,
@@ -88,6 +90,7 @@ from .entertainment import EntertainmentEngine, FrameMailbox, LightMapping
 from .ha_http import async_get_http_host, resolve_use_ha_http
 from .hue_api import HueAPIServer
 from .jointspace import PhilipsJointSpaceSource
+from .smoothing import smoothed_output
 from .user_store import UserStore
 
 PLATFORMS = [Platform.BINARY_SENSOR, Platform.LIGHT, Platform.SENSOR]
@@ -274,8 +277,19 @@ async def async_setup_entry(hass: HomeAssistant, entry: HueEntertainmentConfigEn
     control_store: Store[dict[str, object]] = Store(
         hass, version=1, key=f"{DOMAIN}.{entry.entry_id}.sync_control"
     )
+    # Physical Hue output eases between input frames at the stream rate instead
+    # of jumping on every (e.g. ~10 Hz JointSpace) input frame.
+    output = (
+        smoothed_output(
+            backend,
+            float(entry.options.get(CONF_COLOR_SMOOTHING, DEFAULT_COLOR_SMOOTHING)),
+            int(entry.options.get(CONF_STREAM_FPS, DEFAULT_STREAM_FPS)),
+        )
+        if backend_name == BACKEND_HUE
+        else backend
+    )
     control = await SyncController.async_load(
-        backend,
+        output,
         engine,
         control_store,
         lambda: async_dispatcher_send(hass, SIGNAL_ENTERTAINMENT_CHANGED),

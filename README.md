@@ -159,8 +159,13 @@ Open **Configure** on the integration card to manage sections independently:
 - Philips Hue Bridge and explicit reauthorization
 - Entertainment Area
 - Ambilight channel mapping and edge reversal
-- Performance, brightness, saturation, and inactivity settings
+- Performance, brightness, saturation, colour transition smoothing, and inactivity settings
 - Inherited virtual-bridge and Home Assistant-light options where applicable
+
+**Colour transition smoothing** (milliseconds, default `150`) applies to the physical Hue Bridge
+output. Instead of jumping to each new Ambilight colour, the lamps fade towards it with this time
+constant while the stream keeps running at its full frame rate, independently of how often the TV
+is polled. Higher values look softer but react more slowly; `0` turns smoothing off.
 
 Changing one section preserves unrelated TV and Hue credentials. Opening Configure never starts
 Hue pairing automatically.
